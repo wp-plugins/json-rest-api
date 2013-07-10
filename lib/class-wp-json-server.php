@@ -5,7 +5,7 @@
  * Contains the WP_JSON_Server class.
  *
  * @package WordPress
- * @version 0.1.2
+ * @version 0.2
  */
 
 require_once ABSPATH . 'wp-admin/includes/admin.php';
@@ -235,9 +235,9 @@ class WP_JSON_Server {
 			),
 
 			// Meta-post endpoints
-			'/posts/types'               => array( '__return_null', self::READABLE ),
-			'/posts/types/(?P<type>\w+)' => array( '__return_null', self::READABLE ),
-			'/posts/statuses'            => array( '__return_null', self::READABLE ),
+			'/posts/types'               => array( array( $this, 'getPostTypes' ), self::READABLE ),
+			'/posts/types/(?P<type>\w+)' => array( array( $this, 'getPostType' ), self::READABLE ),
+			'/posts/statuses'            => array( array( $this, 'getPostStatuses' ), self::READABLE ),
 
 			// Taxonomies
 			'/taxonomies'                                       => array( '__return_null', self::READABLE ),
@@ -320,7 +320,6 @@ class WP_JSON_Server {
 				if ( !( $supported & $method ) )
 					continue;
 
-
 				$match = preg_match( '@^' . $route . '$@i', $path, $args );
 
 				if ( !$match )
@@ -336,6 +335,18 @@ class WP_JSON_Server {
 				if ( $supported & self::ACCEPT_JSON ) {
 					$data = json_decode( $this->get_raw_data(), true );
 					$args = array_merge( $args, array( 'data' => $data ) );
+				}
+
+				$args['_method']  = $method;
+				$args['_route']   = $route;
+				$args['_path']    = $path;
+				$args['_headers'] = $this->get_headers( $_SERVER );
+
+				$args = apply_filters( 'json_dispatch_args', $args, $callback );
+
+				// Allow plugins to halt the request via this filter
+				if ( is_wp_error( $args ) ) {
+					return $args;
 				}
 
 				$params = $this->sort_callback_params( $callback, $args );
@@ -403,7 +414,7 @@ class WP_JSON_Server {
 			'routes' => array(),
 			'meta' => array(
 				'links' => array(
-					'help' => 'http://codex.wordpress.org/JSON_API',
+					'help' => 'https://github.com/rmccue/WP-API',
 				),
 			),
 		);
@@ -412,7 +423,7 @@ class WP_JSON_Server {
 		foreach ( $this->getRoutes() as $route => $callbacks ) {
 			$data = array();
 
-			$route = preg_replace( '#\(\?P(<\w+>).*\)#', '$1', $route );
+			$route = preg_replace( '#\(\?P(<\w+?>).*?\)#', '$1', $route );
 			$methods = array();
 			foreach ( self::$method_map as $name => $bitmask ) {
 				foreach ( $callbacks as $callback ) {
@@ -425,6 +436,13 @@ class WP_JSON_Server {
 
 					if ( $callback[1] & self::ACCEPT_JSON )
 						$data['accepts_json'] = true;
+
+					// For non-variable routes, generate links
+					if ( strpos( $route, '<' ) === false ) {
+						$data['meta'] = array(
+							'self' => json_url( $route ),
+						);
+					}
 				}
 			}
 			$available['routes'][$route] = apply_filters( 'json_endpoints_description', $data );
@@ -452,7 +470,7 @@ class WP_JSON_Server {
 	 * @param array $fields optional
 	 * @return array contains a collection of Post entities.
 	 */
-	public function getPosts( $filter = array(), $fields = array(), $type = 'post' ) {
+	public function getPosts( $filter = array(), $fields = array(), $type = 'post', $page = 1 ) {
 		if ( empty($fields) || in_array( 'default', $fields ) )
 			$fields = array_merge( $fields, apply_filters( 'json_default_post_fields', array( 'post', 'meta', 'terms' ), 'getPosts' ) );
 
@@ -464,27 +482,44 @@ class WP_JSON_Server {
 
 		$query['post_type'] = $post_type->name;
 
-		if ( isset( $filter['post_status'] ) )
-			$query['post_status'] = $filter['post_status'];
+		global $wp;
+		// Allow the same as normal WP
+		$valid_vars = apply_filters('query_vars', $wp->public_query_vars);
 
-		if ( isset( $filter['number'] ) )
-			$query['numberposts'] = absint( $filter['number'] );
+		// If the user has the correct permissions, also allow use of internal
+		// query parameters, which are only undesirable on the frontend
+		//
+		// To disable anyway, use `add_filter('json_private_query_vars', '__return_empty_array');`
 
-		if ( isset( $filter['offset'] ) )
-			$query['offset'] = absint( $filter['offset'] );
-
-		if ( isset( $filter['orderby'] ) ) {
-			$query['orderby'] = $filter['orderby'];
-
-			if ( isset( $filter['order'] ) )
-				$query['order'] = $filter['order'];
+		if ( current_user_can( $post_type->cap->edit_posts ) ) {
+			$private = apply_filters('json_private_query_vars', $wp->private_query_vars);
+			$valid_vars = array_merge($valid_vars, $private);
 		}
 
-		if ( isset( $filter['s'] ) ) {
-			$query['s'] = $filter['s'];
+		// Define our own in addition to WP's normal vars
+		$json_valid = array('posts_per_page');
+		$valid_vars = array_merge($valid_vars, $json_valid);
+
+		// Filter and flip for querying
+		$valid_vars = apply_filters('json_query_vars', $valid_vars);
+		$valid_vars = array_flip($valid_vars);
+
+		// Exclude the post_type query var to avoid dodging the permission
+		// check above
+		unset($valid_vars['post_type']);
+
+		foreach ($valid_vars as $var => $index) {
+			if ( isset( $filter[ $var ] ) ) {
+				$query[ $var ] = apply_filters( 'json_query_var-' . $var, $filter[ $var ] );
+			}
 		}
 
-		$posts_list = wp_get_recent_posts( $query );
+		// Special parameter handling
+		$query['paged'] = absint( $page );
+
+		$post_query = new WP_Query();
+		$posts_list = $post_query->query( $query );
+		$this->query_navigation_headers( $post_query );
 
 		if ( ! $posts_list )
 			return array();
@@ -495,6 +530,7 @@ class WP_JSON_Server {
 		header( 'Last-Modified: ' . mysql2date( 'D, d M Y H:i:s', get_lastpostmodified( 'GMT' ), 0 ).' GMT' );
 
 		foreach ( $posts_list as $post ) {
+			$post = get_object_vars( $post );
 			$post_type = get_post_type_object( $post['post_type'] );
 			if ( 'publish' !== $post['post_status'] && ! current_user_can( $post_type->cap->read_post, $post['ID'] ) )
 				continue;
@@ -600,18 +636,29 @@ class WP_JSON_Server {
 	 *
 	 * @param int $id Post ID to edit
 	 * @param array $data Data construct, see {@see WP_JSON_Server::newPost}
+	 * @param array $_headers Header data
 	 * @return true on success
 	 */
-	function editPost( $id, $data ) {
+	function editPost( $id, $data, $_headers = array() ) {
 		$post = get_post( $id, ARRAY_A );
 
 		if ( empty( $post['ID'] ) )
 			return new WP_Error( 'json_post_invalid_id', __( 'Invalid post ID.' ), array( 'status' => 404 ) );
 
-		if ( isset( $data['if_not_modified_since'] ) ) {
+		if ( isset( $_headers['IF_UNMODIFIED_SINCE'] ) ) {
+			// As mandated by RFC2616, we have to check all of RFC1123, RFC1036
+			// and C's asctime() format (and ignore invalid headers)
+			$formats = array( DateTime::RFC1123, DateTime::RFC1036, 'D M j H:i:s Y' );
+			foreach ( $formats as $format ) {
+				$check = DateTime::createFromFormat( DateTime::RFC1123, $_headers['IF_UNMODIFIED_SINCE'] );
+
+				if ( $check !== false )
+					break;
+			}
+
 			// If the post has been modified since the date provided, return an error.
-			if ( mysql2date( 'U', $post['post_modified_gmt'] ) > $data['if_not_modified_since']->getTimestamp() ) {
-				return new WP_Error( 'json_old_revision', __( 'There is a revision of this post that is more recent.' ), array( 'status' => 409 ) );
+			if ( $check && mysql2date( 'U', $post['post_modified_gmt'] ) > $check->format('U') ) {
+				return new WP_Error( 'json_old_revision', __( 'There is a revision of this post that is more recent.' ), array( 'status' => 412 ) );
 			}
 		}
 
@@ -658,6 +705,101 @@ class WP_JSON_Server {
 	}
 
 	/**
+	 * Get all public post types
+	 *
+	 * @uses self::getPostType()
+	 * @return array List of post type data
+	 */
+	public function getPostTypes() {
+		$data = get_post_types( array(), 'objects' );
+
+		$types = array();
+		foreach ($data as $name => $type) {
+			$type = $this->getPostType( $type, true );
+			if ( is_wp_error( $type ) )
+				continue;
+
+			$types[ $name ] = $type;
+		}
+
+		return $types;
+	}
+
+	/**
+	 * Get a post type
+	 *
+	 * @param string|object $type Type name, or type object (internal use)
+	 * @param boolean $_in_collection Is this in a collection? (internal use)
+	 * @return array Post type data
+	 */
+	public function getPostType( $type, $_in_collection = false ) {
+		if ( ! is_object( $type ) )
+			$type = get_post_type_object($type);
+
+		if ( $type->public === false )
+			return new WP_Error( 'json_cannot_read_type', __( 'Cannot view post type' ), array( 'status' => 403 ) );
+
+		$data = array(
+			'name' => $type->label,
+			'slug' => $type->name,
+			'description' => $type->description,
+			'labels' => $type->labels,
+			'queryable' => $type->publicly_queryable,
+			'searchable' => ! $type->exclude_from_search,
+			'hierarchical' => $type->hierarchical,
+			'meta' => array(),
+		);
+
+		if ( $_in_collection )
+			$data['meta']['self'] = json_url( '/posts/types/' . $type->name );
+		else
+			$data['meta']['collection'] = json_url( '/posts/types' );
+
+		if ( $type->publicly_queryable ) {
+			if ($type->name === 'post')
+				$data['meta']['archives'] = json_url( '/posts' );
+			else
+				$data['meta']['archives'] = json_url( add_query_arg( 'type', $type->name, '/posts' ) );
+		}
+
+		return $data;
+	}
+
+	/**
+	 * Get the registered post statuses
+	 *
+	 * @return array List of post status data
+	 */
+	public function getPostStatuses() {
+		$statuses = get_post_stati(array(), 'objects');
+
+		$data = array();
+		foreach ($statuses as $status) {
+			if ( $status->internal === true || ! $status->show_in_admin_status_list )
+				continue;
+
+			$data[ $status->name ] = array(
+				'name' => $status->label,
+				'slug' => $status->name,
+				'public' => $status->public,
+				'protected' => $status->protected,
+				'private' => $status->private,
+				'queryable' => $status->publicly_queryable,
+				'show_in_list' => $status->show_in_admin_all_list,
+				'meta' => array(),
+			);
+			if ( $type->publicly_queryable ) {
+				if ($type->name === 'publish')
+					$data['meta']['archives'] = json_url( '/posts' );
+				else
+					$data['meta']['archives'] = json_url( add_query_arg( 'type', $type->name, '/posts' ) );
+			}
+		}
+
+		return $data;
+	}
+
+	/**
 	 * Send a Link header
 	 *
 	 * @todo Make this safe for <>"';,
@@ -679,6 +821,38 @@ class WP_JSON_Server {
 		}
 		header( $header, false );
 	}
+
+	/**
+	 * Send navigation-related headers for post collections
+	 *
+	 * @param WP_Query $query
+	 */
+	protected function query_navigation_headers( $query ) {
+		$max_page = $query->max_num_pages;
+		$paged = $query->get('paged');
+
+		if ( !$paged )
+			$paged = 1;
+
+		$nextpage = intval($paged) + 1;
+
+		if ( ! $query->is_single() ) {
+			if ( $paged > 1 ) {
+				$request = remove_query_arg( 'page' );
+				$request = add_query_arg( 'page', $paged - 1, $request );
+				$this->link_header( 'prev', $request );
+			}
+
+			if ( $nextpage <= $max_page ) {
+				$request = remove_query_arg( 'page' );
+				$request = add_query_arg( 'page', $nextpage, $request );
+				$this->link_header( 'next', $request );
+			}
+		}
+
+		do_action('json_query_navigation_headers', $this, $query);
+	}
+
 
 	/**
 	 * Retrieve the raw request entity (body)
@@ -743,18 +917,7 @@ class WP_JSON_Server {
 		);
 
 		// Dates
-		$tzstring = get_option( 'timezone_string' );
-		if ( ! $tzstring ) {
-			// Create a UTC+- zone if no timezone string exists
-			$current_offset = get_option( 'gmt_offset' );
-			if ( 0 == $current_offset )
-				$tzstring = 'UTC';
-			elseif ($current_offset < 0)
-				$tzstring = 'Etc/GMT' . $current_offset;
-			else
-				$tzstring = 'Etc/GMT+' . $current_offset;
-		}
-		$timezone = new DateTimeZone( $tzstring );
+		$timezone = $this->get_timezone();
 
 		$date = DateTime::createFromFormat( 'Y-m-d H:i:s', $post['post_date'], $timezone );
 		$post_fields['date'] = $date->format( 'c' );
@@ -857,12 +1020,12 @@ class WP_JSON_Server {
 	 *
 	 * @return string
 	 */
-	protected function prepare_excerpt( $post ) {
+	protected function prepare_excerpt( $excerpt ) {
 		if ( post_password_required() ) {
 			return __( 'There is no excerpt because this is a protected post.' );
 		}
 
-		return apply_filters( 'the_excerpt', apply_filters( 'get_the_excerpt', $post->post_excerpt ) );
+		return apply_filters( 'the_excerpt', apply_filters( 'get_the_excerpt', $excerpt ) );
 	}
 
 	/**
@@ -1047,9 +1210,9 @@ class WP_JSON_Server {
 		}
 
 		// Post status
-		if ( ! empty( $data['post_status'] ) ) {
-			$post['post_status'] = $data['post_status'];
-			switch ( $data['post_status'] ) {
+		if ( ! empty( $data['status'] ) ) {
+			$post['post_status'] = $data['status'];
+			switch ( $post['post_status'] ) {
 				case 'draft':
 				case 'pending':
 					break;
@@ -1076,22 +1239,18 @@ class WP_JSON_Server {
 
 		// Post date
 		if ( ! empty( $data['date'] ) ) {
-			$post['post_date'] = $this->parse_date( $data['date'] );
-			$post['post_date_gmt'] = convert_to_gmt( $post['post_date'] );
+			list( $post['post_date'], $post['post_date_gmt'] ) = $this->get_date_with_gmt( $data['date'] );
 		}
 		elseif ( ! empty( $data['date_gmt'] ) ) {
-			$post['post_date_gmt'] = $this->parse_date( $data['date_gmt'] );
-			$post['post_date'] = convert_to_local( $post['post_date_gmt'] );
+			list( $post['post_date'], $post['post_date_gmt'] ) = $this->get_date_with_gmt( $data['date_gmt'], true );
 		}
 
 		// Post modified
 		if ( ! empty( $data['modified'] ) ) {
-			$post['post_modified'] = $this->parse_date( $data['modified'] );
-			$post['post_modified_gmt'] = convert_to_gmt( $post['post_modified'] );
+			list( $post['post_modified'], $post['post_modified_gmt'] ) = $this->get_date_with_gmt( $data['modified'] );
 		}
 		elseif ( ! empty( $data['modified_gmt'] ) ) {
-			$post['post_modified_gmt'] = $this->parse_date( $data['modified_gmt'] );
-			$post['post_modified'] = convert_to_local( $post['post_modified_gmt'] );
+			list( $post['post_modified'], $post['post_modified_gmt'] ) = $this->get_date_with_gmt( $data['modified_gmt'], true );
 		}
 
 		// Post slug
@@ -1197,6 +1356,44 @@ class WP_JSON_Server {
 	}
 
 	/**
+	 * Parse an RFC3339 timestamp into a DateTime
+	 *
+	 * @param string $date RFC3339 timestamp
+	 * @param boolean $force_utc Force UTC timezone instead of using the timestamp's TZ?
+	 * @return DateTime
+	 */
+	protected function parse_date( $date, $force_utc = false ) {
+		// Default timezone to the server's current one
+		$timezone = self::get_timezone();
+		if ( $force_utc ) {
+			$date = preg_replace( '/[+-]\d+:?\d+$/', '+00:00', $date );
+			$timezone = new DateTimeZone( 'UTC' );
+		}
+		$datetime = DateTime::createFromFormat( DateTime::RFC3339, $date );
+
+		return $datetime;
+	}
+
+	/**
+	 * Get a local date with its GMT equivalent, in MySQL datetime format
+	 *
+	 * @param string $date RFC3339 timestamp
+	 * @param boolean $force_utc Should we force UTC timestamp?
+	 * @return array Local and UTC datetime strings, in MySQL datetime format (Y-m-d H:i:s)
+	 */
+	protected function get_date_with_gmt( $date, $force_utc = false ) {
+		$datetime = $this->parse_date( $date, $force_utc );
+
+		$datetime->setTimezone( self::get_timezone() );
+		$local = $datetime->format( 'Y-m-d H:i:s' );
+
+		$datetime->setTimezone( new DateTimeZone( 'UTC' ) );
+		$utc = $datetime->format('Y-m-d H:i:s');
+
+		return array( $local, $utc );
+	}
+
+	/**
 	 * Retrieve the avatar for a user who provided a user ID or email address.
 	 *
 	 * {@see get_avatar()} doesn't return just the URL, so we have to
@@ -1230,6 +1427,54 @@ class WP_JSON_Server {
 			$avatar .= "&r={$rating}";
 
 		return apply_filters( 'get_avatar', $avatar, $email, '96', '404', '' );
+	}
+
+	/**
+	 * Get the timezone object for the site
+	 *
+	 * @return DateTimeZone
+	 */
+	protected function get_timezone() {
+		static $zone = null;
+		if ($zone !== null)
+			return $zone;
+
+		$tzstring = get_option( 'timezone_string' );
+		if ( ! $tzstring ) {
+			// Create a UTC+- zone if no timezone string exists
+			$current_offset = get_option( 'gmt_offset' );
+			if ( 0 == $current_offset )
+				$tzstring = 'UTC';
+			elseif ($current_offset < 0)
+				$tzstring = 'Etc/GMT' . $current_offset;
+			else
+				$tzstring = 'Etc/GMT+' . $current_offset;
+		}
+		$zone = new DateTimeZone( $tzstring );
+		return $zone;
+	}
+
+	/**
+	 * Extract headers from a PHP-style $_SERVER array
+	 *
+	 * @param array $server Associative array similar to $_SERVER
+	 * @return array Headers extracted from the input
+	 */
+	public function get_headers($server) {
+		$headers = array();
+		// CONTENT_* headers are not prefixed with HTTP_
+		$additional = array('CONTENT_LENGTH' => true, 'CONTENT_MD5' => true, 'CONTENT_TYPE' => true);
+
+		foreach ($server as $key => $value) {
+			if ( strpos( $key, 'HTTP_' ) === 0) {
+				$headers[ substr( $key, 5 ) ] = $value;
+			}
+			elseif ( isset( $additional[ $key ] ) ) {
+				$headers[ $key ] = $value;
+			}
+		}
+
+		return $headers;
 	}
 }
 
