@@ -5,7 +5,7 @@
  * Contains the WP_JSON_Server class.
  *
  * @package WordPress
- * @version 0.3
+ * @version 0.4
  */
 
 require_once ABSPATH . 'wp-admin/includes/admin.php';
@@ -279,7 +279,7 @@ class WP_JSON_Server {
 
 		// Normalise the endpoints
 		foreach ( $endpoints as $route => &$handlers ) {
-			if ( count( $handlers ) <= 2 && ! is_array( $handlers[1] ) ) {
+			if ( count( $handlers ) <= 2 && isset( $handlers[1] ) && ! is_array( $handlers[1] ) ) {
 				$handlers = array( $handlers );
 			}
 		}
@@ -604,6 +604,10 @@ class WP_JSON_Server {
 	 */
 	public function getPost( $id, $fields = array() ) {
 		$id = (int) $id;
+
+		if ( empty( $id ) )
+			return new WP_Error( 'json_post_invalid_id', __( 'Invalid post ID.' ), array( 'status' => 404 ) );
+
 		$post = get_post( $id, ARRAY_A );
 
 		if ( empty( $fields ) || in_array( 'default', $fields ) )
@@ -1405,6 +1409,11 @@ class WP_JSON_Server {
 			$date = preg_replace( '/[+-]\d+:?\d+$/', '+00:00', $date );
 			$timezone = new DateTimeZone( 'UTC' );
 		}
+
+		// Strip millisecond precision (a full stop followed by one or more digits)
+		if ( strpos( $date, '.' ) !== false ) {
+			$date = preg_replace( '/\.\d+/', '', $date );
+		}
 		$datetime = DateTime::createFromFormat( DateTime::RFC3339, $date );
 
 		return $datetime;
@@ -1620,17 +1629,4 @@ class WP_JSON_Server {
 
 		return $headers;
 	}
-}
-
-function json_url( $path = '', $scheme = 'json' ) {
-	return get_json_url( null, $path, $scheme );
-}
-
-function get_json_url( $blog_id = null, $path = '', $scheme = 'json' ) {
-	$url = get_site_url( $blog_id, 'wp-json.php', $scheme );
-
-	if ( !empty( $path ) && is_string( $path ) && strpos( $path, '..' ) === false )
-		$url .= '/' . ltrim( $path, '/' );
-
-	return apply_filters( 'json_url', $url, $path, $blog_id );
 }
