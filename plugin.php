@@ -4,9 +4,12 @@
  * Description: JSON-based REST API for WordPress, developed as part of GSoC 2013.
  * Author: Ryan McCue
  * Author URI: http://ryanmccue.info/
- * Version: 0.4
+ * Version: 0.5
  * Plugin URI: https://github.com/rmccue/WP-API
  */
+include_once( dirname( __FILE__ ) . '/lib/class-wp-json-posts.php' );
+include_once( dirname( __FILE__ ) . '/lib/class-wp-json-pages.php' );
+include_once( dirname( __FILE__ ) . '/lib/class-wp-json-media.php' );
 
 /**
  * Register our rewrite rules for the API
@@ -19,6 +22,31 @@ function json_api_init() {
 	$wp->add_query_var('json_route');
 }
 add_action( 'init', 'json_api_init' );
+
+/**
+ * Register the default JSON API filters
+ *
+ * @internal This will live in default-filters.php
+ */
+function json_api_default_filters() {
+	global $wp_json_posts, $wp_json_pages, $wp_json_media;
+
+	// Posts
+	$wp_json_posts = new WP_JSON_Posts();
+	add_filter( 'json_endpoints', array( $wp_json_posts, 'registerRoutes' ) );
+
+	// Pages
+	$wp_json_pages = new WP_JSON_Pages();
+	add_filter( 'json_endpoints', array( $wp_json_pages, 'registerRoutes' ) );
+
+	// Media
+	$wp_json_media = new WP_JSON_Media();
+	add_filter( 'json_endpoints',       array( $wp_json_media, 'registerRoutes' ) );
+	add_filter( 'json_prepare_post',    array( $wp_json_media, 'addThumbnailData' ), 10, 3 );
+	add_filter( 'json_pre_insert_post', array( $wp_json_media, 'preinsertCheck' ),   10, 3 );
+	add_filter( 'json_insert_post',     array( $wp_json_media, 'attachThumbnail' ),  10, 3 );
+}
+add_action( 'plugins_loaded', 'json_api_default_filters' );
 
 /**
  * Load the JSON API
@@ -45,6 +73,8 @@ function json_api_loaded() {
 	 * @var bool
 	 */
 	define('JSON_REQUEST', true);
+
+	global $wp_json_server;
 
 	// Allow for a plugin to insert a different class to handle requests.
 	$wp_json_server_class = apply_filters('wp_json_server_class', 'WP_JSON_Server');
@@ -78,7 +108,7 @@ register_deactivation_hook( __FILE__, 'json_api_activation' );
  * Register our API Javascript helpers
  */
 function json_register_scripts() {
-	wp_register_script( 'wp-api', plugins_url( dirname( __FILE__ ) . '/wp-api.js' ), array( 'jquery', 'backbone', 'underscore' ), '0.4', true );
+	wp_register_script( 'wp-api', plugins_url( dirname( __FILE__ ) . '/wp-api.js' ), array( 'jquery', 'backbone', 'underscore' ), '0.5', true );
 	wp_localize_script( 'wp-api', 'wpApiOptions', array( 'base' => json_url() ) );
 }
 add_action( 'wp_enqueue_scripts', 'json_register_scripts', -100 );

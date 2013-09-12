@@ -2,8 +2,8 @@
 Contributors: rmccue
 Tags: json, rest, api, rest-api
 Requires at least: 3.5
-Tested up to: 3.5
-Stable tag: 0.4
+Tested up to: 3.7
+Stable tag: 0.5
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 
@@ -13,10 +13,22 @@ JSON-based REST API for WordPress, developed as part of GSoC 2013.
 This is a project to create a JSON-based REST API for WordPress. This project is
 run by Ryan McCue and is part of the WordPress 2013 GSoC projects.
 
+WordPress is moving towards becoming a fully-fledged application framework, and
+we need new APIs. This project was born to create an easy-to-use,
+easy-to-understand and well-tested framework for creating these APIs, plus
+creating APIs for core.
+
+This plugin is currently in Summer of Code mode, but is planned for core
+integration in the future. Please do not rely on any part of the plugin in
+production environments until the project has become part of core, as it is
+liable to change significantly.
+
 All tickets for the project are being tracked on the [GSoC Trac][]. Make sure
-you use the JSON REST API component.
+you use the JSON REST API component. You can also take a look at the [recent
+updates][] for the project.
 
 [GSoC Trac]: https://gsoc.trac.wordpress.org/query?component=JSON+REST+API
+[recent updates]: http://make.wordpress.org/core/tag/json-api/
 
 == Installation ==
 
@@ -31,6 +43,38 @@ working `PATH_INFO` on your server, but you don't need pretty permalinks
 enabled.
 
 == Changelog ==
+
+## 0.5
+* Add support for media - This has been a long time coming, and it's finally at
+	a point where I'm happy to push it out. Good luck. ([#272][])
+* Separate the post-related endpoints - Post-related endpoints are now located
+	in the `WP_JSON_Posts` class. When implementing custom post type support,
+	it's recommended to subclass this.
+
+	The various types are now also only registered via hooks, rather than
+	directly in the server class, which should make it easier to override them
+	as well ([#348][])
+* Add page support - This is a good base if you're looking to create your own
+	custom post type support ([#271][])
+* Switch from fields to context - Rather than passing in a list of fields that
+	you want, you can now pass in a context (usually `view` or `edit`)
+	([#328][]).
+* Always send headers via the server handler - Endpoints are now completely
+	separate from the request, so the server class can now be used for
+	non-HTTP/JSON handlers if needed ([#293][])
+* Use better error codes for disabled features ([#338][])
+* Send `X-WP-Total` and `X-WP-TotalPages` headers for information on
+	post/pagination counts ([#266][])
+
+[View all changes](https://github.com/rmccue/WP-API/compare/0.4...0.5)
+
+[#266]: https://gsoc.trac.wordpress.org/ticket/266
+[#271]: https://gsoc.trac.wordpress.org/ticket/271
+[#272]: https://gsoc.trac.wordpress.org/ticket/272
+[#293]: https://gsoc.trac.wordpress.org/ticket/293
+[#328]: https://gsoc.trac.wordpress.org/ticket/328
+[#338]: https://gsoc.trac.wordpress.org/ticket/338
+[#348]: https://gsoc.trac.wordpress.org/ticket/348
 
 ## 0.4
 * Add Backbone-based models and collections - These are available to your code
