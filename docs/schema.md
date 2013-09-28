@@ -4,6 +4,9 @@ The API is designed around two types of responses: entities, and collections.
 Entities are JSON objects representing internal objects, both abstract and
 WordPress objects. Collections are JSON arrays of Entities.
 
+This document is for clients and providers wanting to ensure full compliance
+with the specification.
+
 
 Defintions
 ==========
@@ -14,7 +17,7 @@ interpreted as described in [RFC2119][].
 * Provider: A site making the API available for use
 * Consumer: An application accessing and interacting with the API
 * slug: A URL-friendly human-readable identifier, usually derived from the title
-        of the entity.
+		of the entity.
 
 [RFC2119]: http://tools.ietf.org/html/rfc2119
 
@@ -64,12 +67,20 @@ root. The template contains URL parts separated by forward slashes, with each
 URL part either a static string, or a route variable encased in angle brackets.
 
 	route            = ( "/"
-	                 / *( "/" ( token / route-variable ) ) )
+					 / *( "/" ( token / route-variable ) ) )
 	route-variable   = "<" token ">"
 
 These routes can be converted into URLs by replacing all route variables with
 their relevant values, then concatenating the relative URL to the API base.
 
+The route descriptor is an object with the following defined properties.
+
+* `supports`: A JSON array of supported HTTP methods (verbs). Possible values
+  are "HEAD", "GET", "POST", "PUT", "PATCH", "DELETE"
+* `accepts_json`: A boolean indicating whether data can be passed directly via a
+  POST request body. Default for missing properties is false.
+* `meta`: An Entity Meta entity. Typical `links` values consist of a `self` link
+  pointing to the route's full URL.
 
 ### `meta`
 The `meta` field is a Entity Meta entity with metadata relating to the entity
@@ -78,11 +89,83 @@ representation.
 Typical `links` values for the meta object consist of a `help` key with the
 value indicating a human-readable documentation page about the API.
 
+### Example
+
+	{
+		"name": "My WordPress Site",
+		"description": "Just another WordPress site",
+		"URL": "http:\/\/example.com",
+		"routes": {
+			"\/": {
+				"supports": [
+					"HEAD",
+					"GET"
+				],
+				"meta": {
+					"self": "http:\/\/example.com\/wp-json.php\/"
+				}
+			},
+			"\/posts": {
+				"supports": [
+					"HEAD",
+					"GET",
+					"POST"
+				],
+				"meta": {
+					"self": "http:\/\/example.com\/wp-json.php\/posts"
+				},
+				"accepts_json": true
+			},
+			"\/posts\/<id>": {
+				"supports": [
+					"HEAD",
+					"GET",
+					"POST",
+					"PUT",
+					"PATCH",
+					"DELETE"
+				],
+				"accepts_json": true
+			},
+			"\/posts\/<id>\/revisions": {
+				"supports": [
+					"HEAD",
+					"GET"
+				]
+			},
+			"\/posts\/<id>\/comments": {
+				"supports": [
+					"HEAD",
+					"GET",
+					"POST"
+				],
+				"accepts_json": true
+			},
+			"\/posts\/<id>\/comments\/<comment>": {
+				"supports": [
+					"HEAD",
+					"GET",
+					"POST",
+					"PUT",
+					"PATCH",
+					"DELETE"
+				],
+				"accepts_json": true
+			},
+		},
+		"meta": {
+			"links": {
+				"help": "https:\/\/github.com\/rmccue\/WP-API",
+				"profile": "https:\/\/raw.github.com\/rmccue\/WP-API\/master\/docs\/schema.json"
+			}
+		}
+	}
 
 Post
 ----
-The Post entity is a JSON object of post properties. The following properties
-are defined for the Post entity object:
+The Post entity is a JSON object of post properties. Unless otherwise defined,
+properties are available in all contexts. The following properties are defined
+for the Post entity object:
 
 ### `title`
 The `title` field is a string with the post's title.
@@ -171,14 +254,29 @@ collection views.
 Consumers who encounter a missing excerpt MAY present a shortened version of the
 `content` field instead.
 
+### `content_raw`, `excerpt_raw`
+The `content_raw` and `excerpt_raw` fields are strings with the post's content
+and excerpt respectively. Unlike the `content` and `excerpt` fields, the value
+has not been passed through internal filtering, and is suitable for editing.
+
+(Context Availability: `edit`)
+
 ### `parent`
-The `parent` field is an integer with the post's parent post ID. A literal zero
-indicates that the post does not have a parent post.
+The `parent` field is an integer or JSON object with the post's parent
+post ID. A literal zero indicates that the post does not have a parent
+post.
 
 	post-parent = "0" / 1*DIGIT
 
 Consumers who encounter a missing parent ID MUST treat it the same as a parent
 post ID of 0.
+
+Parent fields will be expanded into a full Post entity in the `view` or `edit`
+contexts, but only one level deep. The embedded Post entity will be rendered
+using the `parent` context.
+
+In the `parent` context, the field will contain an integer with the post's
+parent post ID as above.
 
 ### `link`
 The `link` field is a string with the full URL to the post's canonical view.
@@ -252,6 +350,76 @@ The `meta` field is a Metadata entity with metadata relating to the post.
 The `meta` field is a Entity Meta entity with metadata relating to the entity
 representation.
 
+### Example
+
+	{
+		"ID": 1,
+		"title": "Hello world!q",
+		"status": "publish",
+		"type": "post",
+		"author": {
+			"ID": 1,
+			"name": "admin",
+			"slug": "admin",
+			"URL": "",
+			"avatar": "http:\/\/0.gravatar.com\/avatar\/c57c8945079831fa3c19caef02e44614&d=404&r=G",
+			"meta": {
+				"links": {
+					"self": "http:\/\/example.com\/wp-json.php\/users\/1",
+					"archives": "http:\/\/example.com\/wp-json.php\/users\/1\/posts"
+				}
+			},
+			"first_name": "",
+			"last_name": ""
+		},
+		"content": "<p>Welcome to WordPress. This is your first post. Edit or delete it, then start blogging!<\/p>\n",
+		"parent": 0,
+		"link": "http:\/\/example.com\/2013\/06\/02\/hello-world\/",
+		"date": "2013-06-02T05:28:00+10:00",
+		"modified": "2013-06-30T13:56:57+10:00",
+		"format": "standard",
+		"slug": "hello-world",
+		"guid": "http:\/\/example.com\/?p=1",
+		"excerpt": "",
+		"menu_order": 0,
+		"comment_status": "open",
+		"ping_status": "open",
+		"sticky": false,
+		"date_tz": "Australia\/Brisbane",
+		"date_gmt": "2013-06-02T05:28:00+00:00",
+		"modified_tz": "Australia\/Brisbane",
+		"modified_gmt": "2013-06-30T03:56:57+00:00",
+		"password": "",
+		"post_meta": [
+		],
+		"meta": {
+			"links": {
+				"self": "http:\/\/example.com\/wp-json.php\/posts\/1",
+				"author": "http:\/\/example.com\/wp-json.php\/users\/1",
+				"collection": "http:\/\/example.com\/wp-json.php\/posts",
+				"replies": "http:\/\/example.com\/wp-json.php\/posts\/1\/comments",
+				"version-history": "http:\/\/example.com\/wp-json.php\/posts\/1\/revisions"
+			}
+		},
+		"featured_image": null,
+		"terms": {
+			"category": {
+				"ID": 1,
+				"name": "Uncategorized",
+				"slug": "uncategorized",
+				"parent": null,
+				"count": 7,
+				"meta": {
+					"links": {
+						"collection": "http:\/\/example.com\/wp-json.php\/posts\/types\/post\/taxonomies\/category\/terms",
+						"self": "http:\/\/example.com\/wp-json.php\/posts\/types\/post\/taxonomies\/category\/terms\/1"
+					}
+				}
+			}
+		}
+	}
+
+
 
 Entity Meta
 -----------
@@ -264,6 +432,12 @@ The following properties are defined for the Entity Meta entity object:
 The `links` field is a JSON object with hyperlinks to related entities. Each
 item's key is a link relation as per the [IANA Link Relations registry][] with
 the value of the item being the corresponding link URL.
+
+Typical link relations are:
+
+* `self`: A URL pointing to the current entity's location.
+* `up`: A URL pointing to the parent entity's location.
+* `collection`: A URL pointing to a collection that the entity is a member of.
 
 [IANA Link Relations registry]: http://www.iana.org/assignments/link-relations/link-relations.xml
 
@@ -411,6 +585,72 @@ Savings Time boundaries.
 
 This field should be treated the same as the `date_tz` property on a
 Post entity.
+
+
+Media
+-----
+The Media entity is a JSON object based on the Post entity. It contains all
+properties of the Post entity, with the following additional properties defined:
+
+### `source`
+The `source` field is a string with the URL of the entity's original file. For
+image media, this is the source file that intermediate representations are
+generated from. For non-image media, this is the attached media file itself.
+
+### `is_image`
+The `is_image` field is a boolean which indicates whether the entity's
+associated file should be handled as an image.
+
+### `attachment_meta`
+The `attachment_meta` field is a Media Meta entity. If the file is not an image
+(as indicated by the `is_image` field), this is an empty JSON object.
+
+
+Media Meta
+----------
+The Media Meta entity is a JSON object with properties relating to the
+associated Media entity. The following properties are defined for the entity:
+
+### `width`
+The `width` field is an integer with the original file's width in pixels.
+
+### `height`
+The `height` field is an integer with the original file's height in pixels.
+
+### `file`
+The `file` field is a string with the path to the original file, relative to the
+site's upload directory.
+
+### `sizes`
+The `sizes` field is a JSON object mapping intermediate image sizes to image
+data objects. The key of each item is the size of the intermediate image as an
+internal string representation. The value of each item has the following
+properties defined.
+
+* `file`: The filename of the intermediate file, relative to the directory of
+  the original file.
+* `width`: The width of the intermediate file in pixels.
+* `height`: The height of the intermediate file in pixels.
+* `mime-type`: The MIME type of the intermediate file.
+* `url`: The full URL to the intermediate file.
+
+### `image_meta`
+The `image_meta` field is a JSON object mapping image meta properties to their
+values. This data is taken from the EXIF data on the original image. The
+following properties are defined.
+
+* `aperture`: The aperture used to create the original image as a decimal number
+  (with two decimal places).
+* `credit`: Credit for the original image.
+* `camera`: The camera used to create the original image.
+* `created_timestamp`: When the file was created, as a Unix timestamp.
+* `copyright`: Copyright for the original image.
+* `focal_length`: The focal length used to create the original image as a
+  decimal string.
+* `iso`: The ISO used to create the original image.
+* `shutter_speed`: The shutter speed used to create the original image, as a
+  decimal string.
+* `title`: The original title of the image.
 
 
 Documents
@@ -577,28 +817,6 @@ The User document describes a member of the site.
 
 ### Body
 The body of a User document is a User entity.
-
-
-Endpoints
-=========
-
-The following endpoints return the given document with associated headers.
-
-	/: Index
-	/posts: Post Collection
-	/posts/<id>: Post
-	/posts/<id>/revisions: Post Collection
-	/posts/<id>/comments: Comment Collection
-	/posts/<id>/comments/<comment>: Comment
-
-	/taxonomies: Taxonomy Collection
-	/taxonomies/<tax>: Taxonomy
-	/taxonomies/<tax>/terms: Term Collection
-	/taxonomies/<tax>/terms/<term>: Term
-
-	/users: User Collection
-	/users/me: User
-	/users/<user>: User
 
 
 Appendix A: JSON Schema

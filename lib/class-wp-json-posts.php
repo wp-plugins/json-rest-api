@@ -281,7 +281,7 @@ class WP_JSON_Posts {
 			// and C's asctime() format (and ignore invalid headers)
 			$formats = array( DateTime::RFC1123, DateTime::RFC1036, 'D M j H:i:s Y' );
 			foreach ( $formats as $format ) {
-				$check = DateTime::createFromFormat( DateTime::RFC1123, $_headers['IF_UNMODIFIED_SINCE'] );
+				$check = DateTime::createFromFormat( $format, $_headers['IF_UNMODIFIED_SINCE'] );
 
 				if ( $check !== false )
 					break;
@@ -411,22 +411,24 @@ class WP_JSON_Posts {
 			'queryable' => $type->publicly_queryable,
 			'searchable' => ! $type->exclude_from_search,
 			'hierarchical' => $type->hierarchical,
-			'meta' => array(),
+			'meta' => array(
+				'links' => array()
+			),
 		);
 
 		if ( $_in_collection )
-			$data['meta']['self'] = json_url( '/posts/types/' . $type->name );
+			$data['meta']['links']['self'] = json_url( '/posts/types/' . $type->name );
 		else
-			$data['meta']['collection'] = json_url( '/posts/types' );
+			$data['meta']['links']['collection'] = json_url( '/posts/types' );
 
 		if ( $type->publicly_queryable ) {
 			if ($type->name === 'post')
-				$data['meta']['archives'] = json_url( '/posts' );
+				$data['meta']['links']['archives'] = json_url( '/posts' );
 			else
-				$data['meta']['archives'] = json_url( add_query_arg( 'type', $type->name, '/posts' ) );
+				$data['meta']['links']['archives'] = json_url( add_query_arg( 'type', $type->name, '/posts' ) );
 		}
 
-		return $data;
+		return apply_filters( 'json_post_type_data', $data, $type );
 	}
 
 	/**
@@ -450,17 +452,19 @@ class WP_JSON_Posts {
 				'private' => $status->private,
 				'queryable' => $status->publicly_queryable,
 				'show_in_list' => $status->show_in_admin_all_list,
-				'meta' => array(),
+				'meta' => array(
+					'links' => array()
+				),
 			);
 			if ( $status->publicly_queryable ) {
 				if ($status->name === 'publish')
-					$data[ $status->name ]['meta']['archives'] = json_url( '/posts' );
+					$data[ $status->name ]['meta']['links']['archives'] = json_url( '/posts' );
 				else
-					$data[ $status->name ]['meta']['archives'] = json_url( add_query_arg( 'status', $status->name, '/posts' ) );
+					$data[ $status->name ]['meta']['links']['archives'] = json_url( add_query_arg( 'status', $status->name, '/posts' ) );
 			}
 		}
 
-		return $data;
+		return apply_filters( 'json_post_statuses', $data, $statuses );
 	}
 
 	/**
@@ -560,14 +564,6 @@ class WP_JSON_Posts {
 		elseif ( 'edit' === $context )
 			return new WP_Error( 'json_cannot_edit', __( 'Sorry, you cannot edit this post' ), array( 'status' => 403 ) );
 
-		// Taxonomies
-		$post_type_taxonomies = get_object_taxonomies( $post['post_type'] );
-		$terms = wp_get_object_terms( $post['ID'], $post_type_taxonomies );
-		$_post['terms'] = array();
-		foreach ( $terms as $term ) {
-			$_post['terms'][ $term->taxonomy ] = $this->prepare_term( $term );
-		}
-
 		// Post meta
 		$_post['post_meta'] = $this->prepare_meta( $post['ID'] );
 
@@ -599,43 +595,6 @@ class WP_JSON_Posts {
 		}
 
 		return apply_filters( 'the_excerpt', apply_filters( 'get_the_excerpt', $excerpt ) );
-	}
-
-	/**
-	 * Prepares term data for return in an XML-RPC object.
-	 *
-	 * @access protected
-	 *
-	 * @param array|object $term The unprepared term data
-	 * @return array The prepared term data
-	 */
-	protected function prepare_term( $term ) {
-		$_term = $term;
-		if ( ! is_array( $_term ) )
-			$_term = get_object_vars( $_term );
-
-		$_term['id'] = $term->term_id;
-		$_term['group'] = $term->term_group;
-		$_term['parent'] = $_term['parent'];
-		$_term['count'] = $_term['count'];
-		#unset($_term['term_id'], )
-
-		$data = array(
-			'ID'     => (int) $term->term_id,
-			'name'   => $term->name,
-			'slug'   => $term->slug,
-			'group'  => (int) $term->term_group,
-			'parent' => (int) $term->parent,
-			'count'  => (int) $term->count,
-			'meta'   => array(
-				'links' => array(
-					'collection' => json_url( '/taxonomy/' . $term->taxonomy ),
-					'self' => json_url( '/taxonomy/' . $term->taxonomy . '/terms/' . $term->term_id ),
-				),
-			),
-		);
-
-		return apply_filters( 'json_prepare_term', $data, $term );
 	}
 
 	/**
@@ -902,9 +861,6 @@ class WP_JSON_Posts {
 				unstick_post( $data['ID'] );
 		}
 
-		// Terms
-		// TODO: implement this
-
 		do_action( 'json_insert_post', $post, $data, $update );
 
 		return $post_ID;
@@ -1077,11 +1033,11 @@ class WP_JSON_Posts {
 		// Meta
 		$meta = array(
 			'links' => array(
-				'in-reply-to' => json_url( sprintf( '/posts/%d', (int) $comment->comment_post_ID ) )
+				'up' => json_url( sprintf( '/posts/%d', (int) $comment->comment_post_ID ) )
 			),
 		);
 		if ( 0 !== (int) $comment->comment_parent ) {
-			$meta['links']['in-reply-to'] .= ',' . json_url( sprintf( '/posts/%d/comments/%d', (int) $comment->comment_post_ID, (int) $comment->comment_parent ) );
+			$meta['links']['in-reply-to'] = json_url( sprintf( '/posts/%d/comments/%d', (int) $comment->comment_post_ID, (int) $comment->comment_parent ) );
 		}
 		if ( 'single' !== $context ) {
 			$meta['links']['self'] = json_url( sprintf( '/posts/%d/comments/%d', (int) $comment->comment_post_ID, (int) $comment->comment_ID ) );
@@ -1093,7 +1049,7 @@ class WP_JSON_Posts {
 			$data = array_merge( $data, $fields );
 
 		if ( in_array( 'meta', $requested_fields ) )
-			$data = array_merge( $data, $meta );
+			$data['meta'] = $meta;
 
 		return $data;
 	}
