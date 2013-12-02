@@ -28,7 +28,7 @@ abstract class WP_JSON_CustomPostType extends WP_JSON_Posts {
 	/**
 	 * Construct the API handler object
 	 */
-	public function __construct() {
+	public function __construct(WP_JSON_ResponseHandler $server) {
 		if ( empty( $this->base ) ) {
 			_doing_it_wrong( 'WP_JSON_CustomPostType::__construct', __( 'The route base must be overridden' ), 'WPAPI-0.6' );
 			return;
@@ -40,6 +40,8 @@ abstract class WP_JSON_CustomPostType extends WP_JSON_Posts {
 
 		add_filter( 'json_endpoints', array( $this, 'registerRoutes' ) );
 		add_filter( 'json_post_type_data', array( $this, 'type_archive_link' ), 10, 2 );
+
+		parent::__construct($server);
 	}
 
 	/**
@@ -69,7 +71,7 @@ abstract class WP_JSON_CustomPostType extends WP_JSON_Posts {
 	 * @return array Modified routes
 	 */
 	public function registerRevisionRoutes( $routes ) {
-		$routes[ '/pages/(?P<id>\d+)/revisions' ] = array(
+		$routes[ $this->base . '/(?P<id>\d+)/revisions' ] = array(
 			array( '__return_null', WP_JSON_Server::READABLE ),
 		);
 		return $routes;
@@ -183,7 +185,7 @@ abstract class WP_JSON_CustomPostType extends WP_JSON_Posts {
 			'links' => array(
 				'self'            => json_url( $this->base . '/' . $post['ID'] ),
 				'author'          => json_url( '/users/' . $post['post_author'] ),
-				'collection'      => json_url( '/pages' ),
+				'collection'      => json_url( $this->base ),
 				'replies'         => json_url( $this->base . '/' . $post['ID'] . '/comments' ),
 				'version-history' => json_url( $this->base . '/' . $post['ID'] . '/revisions' ),
 			),
