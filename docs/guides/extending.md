@@ -235,7 +235,7 @@ built-in types, your registration code should look something like this:
 		$myplugin_api_mytype = new MyPlugin_API_MyType();
 		add_filter( 'json_endpoints', array( $myplugin_api_mytype, 'registerRoutes' ) );
 	}
-	add_action( 'plugins_loaded', 'myplugin_api_init' );
+	add_action( 'wp_json_server_before_serve', 'myplugin_api_init' );
 
 	class MyPlugin_API_MyType {
 		public function registerRoutes( $routes ) {
@@ -267,7 +267,7 @@ hooking and more for you:
 		require_once dirname( __FILE__ ) . '/class-myplugin-api-mytype.php';
 		$myplugin_api_mytype = new MyPlugin_API_MyType();
 	}
-	add_action( 'plugins_loaded', 'myplugin_api_init' );
+	add_action( 'wp_json_server_before_serve', 'myplugin_api_init' );
 
 	// class-myplugin-api-mytype.php
 	class MyPlugin_API_MyType extends WP_JSON_CustomPostType {
@@ -289,6 +289,11 @@ hooking and more for you:
 
 (Note that this CPT base class handles other things as well, including strict
 post type checking and correcting URLs.)
+
+It is important that this class lives in a separate file that is only included
+on a WP API hook, as your plugin may load before the WP API plugin. If you get
+errors about the `WP_JSON_CustomPostType` class not being loaded, this is
+the reason.
 
 The data passed in and returned by the `json_endpoints` filter should be in the
 format of an array containing a map of route regular expression to endpoint

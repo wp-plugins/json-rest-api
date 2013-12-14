@@ -640,7 +640,7 @@ class WP_JSON_Posts {
 			'name' => $user->display_name,
 			'slug' => $user->user_nicename,
 			'URL' => $user->user_url,
-			'avatar' => $this->server->get_avatar( $user->user_email ),
+			'avatar' => $this->server->get_avatar_url( $user->user_email ),
 			'meta' => array(
 				'links' => array(
 					'self' => json_url( '/users/' . $user->ID ),
@@ -787,11 +787,13 @@ class WP_JSON_Posts {
 				if ( ! current_user_can( $post_type->cap->edit_others_posts ) )
 					return new WP_Error( 'json_cannot_edit_others', __( 'You are not allowed to edit posts as this user.' ), array( 'status' => 401 ) );
 
-				$author = get_userdata( $post['post_author'] );
+				$author = get_userdata( $data['author'] );
 
 				if ( ! $author )
 					return new WP_Error( 'json_invalid_author', __( 'Invalid author ID.' ), array( 'status' => 400 ) );
 			}
+
+			$post['post_author'] = $data['author'];
 		}
 
 		// Post password
@@ -910,42 +912,6 @@ class WP_JSON_Posts {
 	}
 
 	/**
-	 * Retrieve the avatar for a user who provided a user ID or email address.
-	 *
-	 * {@see get_avatar()} doesn't return just the URL, so we have to
-	 * reimplement this here.
-	 *
-	 * @todo Rework how we do this. Copying it is a hack.
-	 *
-	 * @since 2.5
-	 * @param string $email Email address
-	 * @return string <img> tag for the user's avatar
-	*/
-	protected function get_avatar( $email ) {
-		if ( ! get_option( 'show_avatars' ) )
-			return false;
-
-		$email_hash = md5( strtolower( trim( $email ) ) );
-
-		if ( is_ssl() ) {
-			$host = 'https://secure.gravatar.com';
-		} else {
-			if ( !empty($email) )
-				$host = sprintf( 'http://%d.gravatar.com', ( hexdec( $email_hash[0] ) % 2 ) );
-			else
-				$host = 'http://0.gravatar.com';
-		}
-
-		$avatar = "$host/avatar/$email_hash&d=404";
-
-		$rating = get_option( 'avatar_rating' );
-		if ( !empty( $rating ) )
-			$avatar .= "&r={$rating}";
-
-		return apply_filters( 'get_avatar', $avatar, $email, '96', '404', '' );
-	}
-
-	/**
 	 * Prepares comment data for returning as a JSON response.
 	 *
 	 * @param stdClass $comment Comment object
@@ -1016,7 +982,7 @@ class WP_JSON_Posts {
 				'ID' => 0,
 				'name' => $comment->comment_author,
 				'URL' => $comment->comment_author_url,
-				'avatar' => $this->server->get_avatar( $comment->comment_author_email ),
+				'avatar' => $this->server->get_avatar_url( $comment->comment_author_email ),
 			);
 		}
 

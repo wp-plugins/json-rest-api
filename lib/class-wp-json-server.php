@@ -5,7 +5,7 @@
  * Contains the WP_JSON_Server class.
  *
  * @package WordPress
- * @version 0.7
+ * @version 0.8
  */
 
 require_once ABSPATH . 'wp-admin/includes/admin.php';
@@ -173,18 +173,18 @@ class WP_JSON_Server implements WP_JSON_ResponseHandler {
 		$jsonp_enabled = apply_filters( 'json_jsonp_enabled', true );
 
 		if ( ! $enabled ) {
-			echo $this->json_error( 'json_disabled', 'The JSON API is disabled on this site.', 404 );
+			echo $this->json_error( 'json_disabled', __( 'The JSON API is disabled on this site.' ), 404 );
 			return false;
 		}
 		if ( isset($_GET['_jsonp']) ) {
 			if ( ! $jsonp_enabled ) {
-				echo $this->json_error( 'json_callback_disabled', 'JSONP support is disabled on this site.', 400 );
+				echo $this->json_error( 'json_callback_disabled', __( 'JSONP support is disabled on this site.' ), 400 );
 				return false;
 			}
 
 			// Check for invalid characters (only alphanumeric allowed)
 			if ( preg_match( '/\W/', $_GET['_jsonp'] ) ) {
-				echo $this->json_error( 'json_callback_invalid', 'The JSONP callback function is invalid.', 400 );
+				echo $this->json_error( 'json_callback_invalid', __( 'The JSONP callback function is invalid.' ), 400 );
 				return false;
 			}
 		}
@@ -231,10 +231,12 @@ class WP_JSON_Server implements WP_JSON_ResponseHandler {
 			if ( 'HEAD' === $this->method )
 				return;
 
+			$result = json_encode( $this->prepare_response( $result ) );
+
 			if ( isset($_GET['_jsonp']) )
-				echo $_GET['_jsonp'] . '(' . json_encode( $result ) . ')';
+				echo $_GET['_jsonp'] . '(' . $result . ')';
 			else
-				echo json_encode( $result );
+				echo $result;
 		}
 	}
 
@@ -498,7 +500,7 @@ class WP_JSON_Server implements WP_JSON_ResponseHandler {
 	 * @param array $other Other parameters to send, as an assocative array
 	 */
 	public function link_header( $rel, $link, $other = array() ) {
-		$header = 'Link: <' . $link . '>; rel="' . $rel . '"';
+		$header = '<' . $link . '>; rel="' . $rel . '"';
 		foreach ( $other as $key => $value ) {
 			if ( 'title' == $key )
 				$value = '"' . $value . '"';
@@ -560,6 +562,49 @@ class WP_JSON_Server implements WP_JSON_ResponseHandler {
 	}
 
 	/**
+	 * Prepares response data to be serialized to JSON
+	 *
+	 * This supports the JsonSerializable interface for PHP 5.2-5.3 as well.
+	 *
+	 * @param mixed $data Native representation
+	 * @return array|string Data ready for `json_encode()`
+	 */
+	public function prepare_response($data) {
+		if ( ! defined( 'WP_JSON_SERIALIZE_COMPATIBLE' ) || WP_JSON_SERIALIZE_COMPATIBLE === false ) {
+			return $data;
+		}
+
+		switch ( gettype( $data ) ) {
+			case 'boolean':
+			case 'integer':
+			case 'double':
+			case 'string':
+			case 'NULL':
+				// These values can be passed through
+				return $data;
+
+			case 'array':
+				// Arrays must be mapped in case they also return objects
+				return array_map( array( $this, 'prepare_response' ), $data);
+
+			case 'object':
+				if ( $data instanceof JsonSerializable ) {
+					$data = $data->jsonSerialize();
+				}
+				else {
+					$data = get_object_vars( $data );
+				}
+
+				// Now, pass the array (or whatever was returned from
+				// jsonSerialize through.)
+				return $this->prepare_response( $data );
+
+			default:
+				return null;
+		}
+	}
+
+	/**
 	 * Parse an RFC3339 timestamp into a DateTime
 	 *
 	 * @param string $date RFC3339 timestamp
@@ -603,39 +648,25 @@ class WP_JSON_Server implements WP_JSON_ResponseHandler {
 	}
 
 	/**
-	 * Retrieve the avatar for a user who provided a user ID or email address.
+	 * Retrieve the avatar url for a user who provided a user ID or email address.
 	 *
 	 * {@see get_avatar()} doesn't return just the URL, so we have to
-	 * reimplement this here.
+	 * extract it here.
 	 *
-	 * @todo Rework how we do this. Copying it is a hack.
-	 *
-	 * @since 2.5
 	 * @param string $email Email address
-	 * @return string <img> tag for the user's avatar
+	 * @return string url for the user's avatar
 	*/
-	public function get_avatar( $email ) {
-		if ( ! get_option( 'show_avatars' ) )
-			return false;
+	public function get_avatar_url( $email ) {
+		$avatar_html = get_avatar( $email );
+		// strip the avatar url from the get_avatar img tag.
+		preg_match('/src=["|\'](.+)[\&|"|\']/U', $avatar_html, $matches);
 
-		$email_hash = md5( strtolower( trim( $email ) ) );
+		if ( isset( $matches[1] ) && ! empty( $matches[1] ) ) {
 
-		if ( is_ssl() ) {
-			$host = 'https://secure.gravatar.com';
-		} else {
-			if ( !empty($email) )
-				$host = sprintf( 'http://%d.gravatar.com', ( hexdec( $email_hash[0] ) % 2 ) );
-			else
-				$host = 'http://0.gravatar.com';
+			return esc_url_raw( $matches[1] );
 		}
 
-		$avatar = "$host/avatar/$email_hash&d=404";
-
-		$rating = get_option( 'avatar_rating' );
-		if ( !empty( $rating ) )
-			$avatar .= "&r={$rating}";
-
-		return apply_filters( 'get_avatar', $avatar, $email, '96', '404', '' );
+		return '';
 	}
 
 	/**
