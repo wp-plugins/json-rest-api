@@ -4,12 +4,17 @@
  * Description: JSON-based REST API for WordPress, developed as part of GSoC 2013.
  * Author: Ryan McCue
  * Author URI: http://ryanmccue.info/
- * Version: 0.8
+ * Version: 0.9
  * Plugin URI: https://github.com/rmccue/WP-API
  */
 include_once( dirname( __FILE__ ) . '/lib/class-jsonserializable.php' );
 
+include_once( dirname( __FILE__ ) . '/lib/class-wp-json-datetime.php' );
+
 include_once( dirname( __FILE__ ) . '/lib/class-wp-json-responsehandler.php' );
+include_once( dirname( __FILE__ ) . '/lib/class-wp-json-responseinterface.php' );
+include_once( dirname( __FILE__ ) . '/lib/class-wp-json-response.php' );
+
 include_once( dirname( __FILE__ ) . '/lib/class-wp-json-posts.php' );
 include_once( dirname( __FILE__ ) . '/lib/class-wp-json-customposttype.php' );
 include_once( dirname( __FILE__ ) . '/lib/class-wp-json-pages.php' );
@@ -28,8 +33,8 @@ function json_api_init() {
 add_action( 'init', 'json_api_init' );
 
 function json_api_register_rewrites() {
-	add_rewrite_rule( '^wp-json\.php/?$','index.php?json_route=/','top' );
-	add_rewrite_rule( '^wp-json\.php(.*)?','index.php?json_route=$matches[1]','top' );
+	add_rewrite_rule( '^wp-json/?$','index.php?json_route=/','top' );
+	add_rewrite_rule( '^wp-json(.*)?','index.php?json_route=$matches[1]','top' );
 }
 
 /**
@@ -42,24 +47,23 @@ function json_api_default_filters($server) {
 
 	// Posts
 	$wp_json_posts = new WP_JSON_Posts($server);
-	add_filter( 'json_endpoints', array( $wp_json_posts, 'registerRoutes' ), 0 );
+	add_filter( 'json_endpoints', array( $wp_json_posts, 'register_routes' ), 0 );
 
 	// Pages
 	$wp_json_pages = new WP_JSON_Pages($server);
-	add_filter( 'json_endpoints', array( $wp_json_pages, 'registerRoutes' ), 1 );
-	add_filter( 'json_post_type_data', array( $wp_json_pages, 'type_archive_link' ), 10, 2 );
+	$wp_json_pages->register_filters();
 
 	// Media
 	$wp_json_media = new WP_JSON_Media($server);
-	add_filter( 'json_endpoints',       array( $wp_json_media, 'registerRoutes' ), 1 );
-	add_filter( 'json_prepare_post',    array( $wp_json_media, 'addThumbnailData' ), 10, 3 );
-	add_filter( 'json_pre_insert_post', array( $wp_json_media, 'preinsertCheck' ),   10, 3 );
-	add_filter( 'json_insert_post',     array( $wp_json_media, 'attachThumbnail' ),  10, 3 );
+	add_filter( 'json_endpoints',       array( $wp_json_media, 'register_routes' ), 1 );
+	add_filter( 'json_prepare_post',    array( $wp_json_media, 'add_thumbnail_data' ), 10, 3 );
+	add_filter( 'json_pre_insert_post', array( $wp_json_media, 'preinsert_check' ),   10, 3 );
+	add_filter( 'json_insert_post',     array( $wp_json_media, 'attach_thumbnail' ),  10, 3 );
 	add_filter( 'json_post_type_data',  array( $wp_json_media, 'type_archive_link' ), 10, 2 );
 
 	// Posts
 	$wp_json_taxonomies = new WP_JSON_Taxonomies($server);
-	add_filter( 'json_endpoints',      array( $wp_json_taxonomies, 'registerRoutes' ), 2 );
+	add_filter( 'json_endpoints',      array( $wp_json_taxonomies, 'register_routes' ), 2 );
 	add_filter( 'json_post_type_data', array( $wp_json_taxonomies, 'add_taxonomy_data' ), 10, 2 );
 	add_filter( 'json_prepare_post',   array( $wp_json_taxonomies, 'add_term_data' ), 10, 3 );
 }
@@ -67,13 +71,16 @@ add_action( 'wp_json_server_before_serve', 'json_api_default_filters', 10, 1 );
 
 /**
  * Load the JSON API
+ *
+ * @todo Extract code that should be unit tested into isolated methods such as
+ *       the wp_json_server_class filter and serving requests. This would also
+ *       help for code re-use by `wp-json` endpoint. Note that we can't unit
+ *       test any method that calls die().
  */
 function json_api_loaded() {
 	if ( empty( $GLOBALS['wp']->query_vars['json_route'] ) )
 		return;
 
-	include_once( ABSPATH . WPINC . '/class-IXR.php' );
-	include_once( ABSPATH . WPINC . '/class-wp-xmlrpc-server.php' );
 	include_once( dirname( __FILE__ ) . '/lib/class-wp-json-server.php' );
 
 	/**
@@ -117,19 +124,50 @@ function json_api_loaded() {
 add_action( 'template_redirect', 'json_api_loaded', -100 );
 
 /**
- * Flush the rewrite rules on activation
+ * Register routes and flush the rewrite rules on activation.
  */
-function json_api_activation() {
-	json_api_register_rewrites();
-	flush_rewrite_rules();
+function json_api_activation( $network_wide ) {
+	if ( function_exists( 'is_multisite' ) && is_multisite() && $network_wide ) {
+
+		$mu_blogs = wp_get_sites();
+
+		foreach ( $mu_blogs as $mu_blog ) {
+
+			switch_to_blog( $mu_blog['blog_id'] );
+			json_api_register_rewrites();
+			flush_rewrite_rules();
+		}
+
+		restore_current_blog();
+
+	} else {
+
+		json_api_register_rewrites();
+		flush_rewrite_rules();
+	}
 }
 register_activation_hook( __FILE__, 'json_api_activation' );
 
 /**
- * Also flush the rewrite rules on deactivation
+ * Flush the rewrite rules on deactivation
  */
-function json_api_deactivation() {
-	flush_rewrite_rules();
+function json_api_deactivation( $network_wide ) {
+	if ( function_exists( 'is_multisite' ) && is_multisite() && $network_wide ) {
+
+		$mu_blogs = wp_get_sites();
+
+		foreach ( $mu_blogs as $mu_blog ) {
+
+			switch_to_blog( $mu_blog['blog_id'] );
+			flush_rewrite_rules();
+		}
+
+		restore_current_blog();
+
+	} else {
+
+		flush_rewrite_rules();
+	}
 }
 register_deactivation_hook( __FILE__, 'json_api_deactivation' );
 
@@ -143,6 +181,45 @@ function json_register_scripts() {
 add_action( 'wp_enqueue_scripts', 'json_register_scripts', -100 );
 
 /**
+ * Add the API URL to the WP RSD endpoint
+ */
+function json_output_rsd() {
+?>
+	<api name="WP-API" blogID="1" preferred="false" apiLink="<?php echo get_json_url() ?>" />
+<?php
+}
+add_action( 'xmlrpc_rsd_apis', 'json_output_rsd' );
+
+/**
+ * Output API link tag into page header
+ */
+function json_output_link_wp_head() {
+	$api_root = get_json_url();
+
+	if ( empty( $api_root ) )
+		return;
+
+	echo "<link rel='https://github.com/WP-API/WP-API' href='" . esc_url( $api_root ) . "' />\n";
+}
+add_action( 'wp_head', 'json_output_link_wp_head', 10, 0 );
+
+/**
+ * Send a Link header for the API
+ */
+function json_output_link_header() {
+	if ( headers_sent() )
+		return;
+
+	$api_root = get_json_url();
+
+	if ( empty($api_root) )
+		return;
+
+	header('Link: <' . $api_root . '>; rel="https://github.com/WP-API/WP-API"', false);
+}
+add_action( 'template_redirect', 'json_output_link_header', 11, 0 );
+
+/**
  * Get URL to a JSON endpoint on a site
  *
  * @todo Check if this is even necessary
@@ -152,7 +229,7 @@ add_action( 'wp_enqueue_scripts', 'json_register_scripts', -100 );
  * @return string Full URL to the endpoint
  */
 function get_json_url( $blog_id = null, $path = '', $scheme = 'json' ) {
-	$url = get_home_url( $blog_id, 'wp-json.php', $scheme );
+	$url = get_home_url( $blog_id, 'wp-json', $scheme );
 
 	if ( !empty( $path ) && is_string( $path ) && strpos( $path, '..' ) === false )
 		$url .= '/' . ltrim( $path, '/' );

@@ -5,7 +5,7 @@
  * Contains the WP_JSON_Server class.
  *
  * @package WordPress
- * @version 0.8
+ * @version 0.9
  */
 
 require_once ABSPATH . 'wp-admin/includes/admin.php';
@@ -53,7 +53,7 @@ class WP_JSON_Server implements WP_JSON_ResponseHandler {
 	);
 
 	/**
-	 * Requested path (relative to the API root, wp-json.php)
+	 * Requested path (relative to the API root, `wp-json`)
 	 *
 	 * @var string
 	 */
@@ -116,6 +116,36 @@ class WP_JSON_Server implements WP_JSON_ResponseHandler {
 	}
 
 	/**
+	 * Convert an error to a response object
+	 *
+	 * This iterates over all error codes and messages to change it into a flat
+	 * array. This enables simpler client behaviour, as it is represented as a
+	 * list in JSON rather than an object/map
+	 *
+	 * @param WP_Error $error
+	 * @return array List of associative arrays with code and message keys
+	 */
+	protected function error_to_response( $error ) {
+		$error_data = $error->get_error_data();
+		if ( is_array( $error_data ) && isset( $error_data['status'] ) ) {
+			$status = $error_data['status'];
+		}
+		else {
+			$status = 500;
+		}
+
+		$data = array();
+		foreach ( (array) $error->errors as $code => $messages ) {
+			foreach ( (array) $messages as $message ) {
+				$data[] = array( 'code' => $code, 'message' => $message );
+			}
+		}
+		$response = new WP_JSON_Response( $data, $status );
+
+		return $response;
+	}
+
+	/**
 	 * Convert an error to an array
 	 *
 	 * This iterates over all error codes and messages to change it into a flat
@@ -126,13 +156,10 @@ class WP_JSON_Server implements WP_JSON_ResponseHandler {
 	 * @return array List of associative arrays with code and message keys
 	 */
 	protected function error_to_array( $error ) {
-		$errors = array();
-		foreach ( (array) $error->errors as $code => $messages ) {
-			foreach ( (array) $messages as $message ) {
-				$errors[] = array( 'code' => $code, 'message' => $message );
-			}
-		}
-		return $errors;
+		_deprecated_function( 'WP_JSON_Server::error_to_array', 'WPAPI-0.8', 'WP_JSON_Server::error_to_response' );
+
+		$response = $this->error_to_response( $error );
+		return $response->get_data();
 	}
 
 	/**
@@ -166,7 +193,7 @@ class WP_JSON_Server implements WP_JSON_ResponseHandler {
 	 * @uses WP_JSON_Server::dispatch()
 	 */
 	public function serve_request( $path = null ) {
-		$this->header( 'Content-Type', 'application/json; charset=' . get_option( 'blog_charset' ), true );
+		$this->send_header( 'Content-Type', 'application/json; charset=' . get_option( 'blog_charset' ), true );
 
 		// Proper filter for turning off the JSON API. It is on by default.
 		$enabled = apply_filters( 'json_enabled', true );
@@ -214,13 +241,18 @@ class WP_JSON_Server implements WP_JSON_ResponseHandler {
 			$result = $this->dispatch();
 		}
 
+		// Normalize errors to response objects
 		if ( is_wp_error( $result ) ) {
-			$data = $result->get_error_data();
-			if ( is_array( $data ) && isset( $data['status'] ) ) {
-				$this->send_status( $data['status'] );
-			}
+			$result = $this->error_to_response( $result );
+		}
 
-			$result = $this->error_to_array( $result );
+		// Send extra data from response objects
+		if ( $result instanceof WP_JSON_ResponseInterface ) {
+			$headers = $result->get_headers();
+			$this->send_headers( $headers );
+
+			$code = $result->get_status();
+			$this->set_status( $code );
 		}
 
 		// This is a filter rather than an action, since this is designed to be
@@ -257,10 +289,10 @@ class WP_JSON_Server implements WP_JSON_ResponseHandler {
 	 *
 	 * @return array `'/path/regex' => array( $callback, $bitmask )` or `'/path/regex' => array( array( $callback, $bitmask ), ...)`
 	 */
-	public function getRoutes() {
+	public function get_routes() {
 		$endpoints = array(
 			// Meta endpoints
-			'/' => array( array( $this, 'getIndex' ), self::READABLE ),
+			'/' => array( array( $this, 'get_index' ), self::READABLE ),
 
 			// Users
 			'/users'               => array(
@@ -318,7 +350,7 @@ class WP_JSON_Server implements WP_JSON_ResponseHandler {
 			default:
 				return new WP_Error( 'json_unsupported_method', __( 'Unsupported request method' ), array( 'status' => 400 ) );
 		}
-		foreach ( $this->getRoutes() as $route => $handlers ) {
+		foreach ( $this->get_routes() as $route => $handlers ) {
 			foreach ( $handlers as $handler ) {
 				$callback = $handler[0];
 				$supported = isset( $handler[1] ) ? $handler[1] : self::METHOD_GET;
@@ -415,7 +447,7 @@ class WP_JSON_Server implements WP_JSON_ResponseHandler {
 	 *
 	 * @return array Index entity
 	 */
-	public function getIndex() {
+	public function get_index() {
 		// General site data
 		$available = array(
 			'name' => get_option( 'blogname' ),
@@ -431,7 +463,7 @@ class WP_JSON_Server implements WP_JSON_ResponseHandler {
 		);
 
 		// Find the available routes
-		foreach ( $this->getRoutes() as $route => $callbacks ) {
+		foreach ( $this->get_routes() as $route => $callbacks ) {
 			$data = array();
 
 			$route = preg_replace( '#\(\?P(<\w+?>).*?\)#', '$1', $route );
@@ -467,6 +499,17 @@ class WP_JSON_Server implements WP_JSON_ResponseHandler {
 	 * @param int $code HTTP status
 	 */
 	public function send_status( $code ) {
+		_deprecated_function( 'WP_JSON_Server::send_status', 'WPAPI-0.8', 'WP_JSON_Response' );
+
+		status_header( $code );
+	}
+
+	/**
+	 * Send a HTTP status code
+	 *
+	 * @param int $code HTTP status
+	 */
+	protected function set_status( $code ) {
 		status_header( $code );
 	}
 
@@ -478,12 +521,43 @@ class WP_JSON_Server implements WP_JSON_ResponseHandler {
 	 * @param boolean $replace Should we replace the existing header?
 	 */
 	public function header( $key, $value, $replace = true ) {
+		_deprecated_function( 'WP_JSON_Server::header', 'WPAPI-0.8', 'WP_JSON_Response' );
+
 		// Sanitize as per RFC2616 (Section 4.2):
 		//   Any LWS that occurs between field-content MAY be replaced with a
 		//   single SP before interpreting the field value or forwarding the
 		//   message downstream.
 		$value = preg_replace( '/\s+/', ' ', $value );
 		header( sprintf( '%s: %s', $key, $value ), $replace );
+	}
+
+	/**
+	 * Send a HTTP header
+	 *
+	 * This is set via the response object, unlike {@see self::header()}, which
+	 * was called directly before response objects were added.
+	 *
+	 * @param string $key Header key
+	 * @param string $value Header value
+	 */
+	protected function send_header( $key, $value ) {
+		// Sanitize as per RFC2616 (Section 4.2):
+		//   Any LWS that occurs between field-content MAY be replaced with a
+		//   single SP before interpreting the field value or forwarding the
+		//   message downstream.
+		$value = preg_replace( '/\s+/', ' ', $value );
+		header( sprintf( '%s: %s', $key, $value ) );
+	}
+
+	/**
+	 * Send multiple HTTP headers
+	 *
+	 * @param array Map of header name to header value
+	 */
+	protected function send_headers( $headers ) {
+		foreach ( $headers as $key => $value ) {
+			$this->send_header( $key, $value );
+		}
 	}
 
 	/**
@@ -500,6 +574,8 @@ class WP_JSON_Server implements WP_JSON_ResponseHandler {
 	 * @param array $other Other parameters to send, as an assocative array
 	 */
 	public function link_header( $rel, $link, $other = array() ) {
+		_deprecated_function( 'WP_JSON_Server::link_header', 'WPAPI-0.8', 'WP_JSON_Response' );
+
 		$header = '<' . $link . '>; rel="' . $rel . '"';
 		foreach ( $other as $key => $value ) {
 			if ( 'title' == $key )
@@ -515,6 +591,8 @@ class WP_JSON_Server implements WP_JSON_ResponseHandler {
 	 * @param WP_Query $query
 	 */
 	public function query_navigation_headers( $query ) {
+		_deprecated_function( 'WP_JSON_Server::query_navigation_headers', 'WPAPI-0.8', 'WP_JSON_Response' );
+
 		$max_page = $query->max_num_pages;
 		$paged = $query->get('paged');
 
@@ -623,7 +701,7 @@ class WP_JSON_Server implements WP_JSON_ResponseHandler {
 		if ( strpos( $date, '.' ) !== false ) {
 			$date = preg_replace( '/\.\d+/', '', $date );
 		}
-		$datetime = DateTime::createFromFormat( DateTime::RFC3339, $date );
+		$datetime = WP_JSON_DateTime::createFromFormat( DateTime::RFC3339, $date, $timezone );
 
 		return $datetime;
 	}
