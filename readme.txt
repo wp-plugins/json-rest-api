@@ -23,11 +23,10 @@ integration in the future. Please do not rely on any part of the plugin in
 production environments until the project has become part of core, as it is
 liable to change significantly.
 
-All tickets for the project are being tracked on the [GSoC Trac][]. Make sure
-you use the JSON REST API component. You can also take a look at the [recent
-updates][] for the project.
+All tickets for the project are being tracked on [GitHub][]. You can also take a
+look at the [recent updates][] for the project.
 
-[GSoC Trac]: https://gsoc.trac.wordpress.org/query?component=JSON+REST+API
+[GitHub]: https://github.com/WP-API/WP-API
 [recent updates]: http://make.wordpress.org/core/tag/json-api/
 
 == Installation ==
