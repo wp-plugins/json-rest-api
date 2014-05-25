@@ -36,17 +36,26 @@ class WP_JSON_Posts {
 				array( array( $this, 'edit_post' ),   WP_JSON_Server::EDITABLE | WP_JSON_Server::ACCEPT_JSON ),
 				array( array( $this, 'delete_post' ), WP_JSON_Server::DELETABLE ),
 			),
-			'/posts/(?P<id>\d+)/revisions' => array( '__return_null', WP_JSON_Server::READABLE ),
+			'/posts/(?P<id>\d+)/revisions' => array( array( $this, 'get_revisions' ), WP_JSON_Server::READABLE ),
+
+			// Meta
+			'/posts/(?P<id>\d+)/meta' => array(
+				array( array( $this, 'get_all_meta' ), WP_JSON_Server::READABLE ),
+				array( array( $this, 'add_meta' ),     WP_JSON_Server::CREATABLE | WP_JSON_Server::ACCEPT_JSON ),
+			),
+			'/posts/(?P<id>\d+)/meta/(?P<mid>\d+)' => array(
+				array( array( $this, 'get_meta' ),    WP_JSON_Server::READABLE ),
+				array( array( $this, 'update_meta' ), WP_JSON_Server::EDITABLE | WP_JSON_Server::ACCEPT_JSON ),
+				array( array( $this, 'delete_meta' ), WP_JSON_Server::DELETABLE ),
+			),
 
 			// Comments
 			'/posts/(?P<id>\d+)/comments'                  => array(
 				array( array( $this, 'get_comments' ), WP_JSON_Server::READABLE ),
-				array( '__return_null', WP_JSON_Server::CREATABLE | WP_JSON_Server::ACCEPT_JSON ),
 			),
 			'/posts/(?P<id>\d+)/comments/(?P<comment>\d+)' => array(
 				array( array( $this, 'get_comment' ), WP_JSON_Server::READABLE ),
-				array( '__return_null', WP_JSON_Server::EDITABLE | WP_JSON_Server::ACCEPT_JSON ),
-				array( '__return_null', WP_JSON_Server::DELETABLE ),
+				array( array( $this, 'delete_comment' ), WP_JSON_Server::DELETABLE ),
 			),
 
 			// Meta-post endpoints
@@ -55,6 +64,31 @@ class WP_JSON_Posts {
 			'/posts/statuses'            => array( array( $this, 'get_post_statuses' ), WP_JSON_Server::READABLE ),
 		);
 		return array_merge( $routes, $post_routes );
+	}
+
+	/**
+	 * Get revisions for a specific post.
+	 *
+	 * @param int $id Post ID
+	 * @uses wp_get_post_revisions
+	 * @return WP_JSON_Response
+	 */
+	public function get_revisions( $id ) {
+		$id = (int) $id;
+
+		if ( empty( $id ) )
+			return new WP_Error( 'json_post_invalid_id', __( 'Invalid post ID.' ), array( 'status' => 404 ) );
+
+		// Todo: Query args filter for wp_get_post_revisions
+		$revisions = wp_get_post_revisions( $id );
+
+		foreach ( $revisions as $revision ) {
+			$post = get_object_vars( $revision );
+
+			$struct[] = $this->prepare_post( $post, 'view-revision' );
+		}
+
+		return $struct;
 	}
 
 	/**
@@ -73,18 +107,24 @@ class WP_JSON_Posts {
 	 * @see WP_JSON_Posts::get_post() for more on $fields
 	 * @see get_posts() for more on $filter values
 	 *
-	 * @param array $filter optional
-	 * @param array $fields optional
-	 * @return array contains a collection of Post entities.
+	 * @param array $filter Parameters to pass through to `WP_Query`
+	 * @param string $context
+	 * @param string|array $type Post type slug, or array of slugs
+	 * @param int $page Page number (1-indexed)
+	 * @return stdClass[] Collection of Post entities
 	 */
 	public function get_posts( $filter = array(), $context = 'view', $type = 'post', $page = 1 ) {
 		$query = array();
 
-		$post_type = get_post_type_object( $type );
-		if ( ! ( (bool) $post_type ) )
-			return new WP_Error( 'json_invalid_post_type', __( 'The post type specified is not valid' ), array( 'status' => 403 ) );
+		// Validate post types and permissions
+		$query['post_type'] = array();
+		foreach ( (array) $type as $type_name ) {
+			$post_type = get_post_type_object( $type_name );
+			if ( ! ( (bool) $post_type ) || ! $post_type->show_in_json )
+				return new WP_Error( 'json_invalid_post_type', sprintf( __( 'The post type "%s" is not valid' ), $type_name ), array( 'status' => 403 ) );
 
-		$query['post_type'] = $post_type->name;
+			$query['post_type'][] = $post_type->name;
+		}
 
 		global $wp;
 		// Allow the same as normal WP
@@ -159,8 +199,14 @@ class WP_JSON_Posts {
 	 * @return boolean Can we read it?
 	 */
 	protected function check_read_permission( $post ) {
-		// Can we read the post?
 		$post_type = get_post_type_object( $post['post_type'] );
+
+		// Ensure the post type can be read
+		if ( ! $post_type->show_in_json ) {
+			return false;
+		}
+
+		// Can we read the post?
 		if ( 'publish' === $post['post_status'] || current_user_can( $post_type->cap->read_post, $post['ID'] ) ) {
 			return true;
 		}
@@ -181,6 +227,21 @@ class WP_JSON_Posts {
 		}
 
 		return false;
+	}
+
+	/**
+	 * Check if we can edit a post
+	 * @param array $post Post data
+	 * @return boolean Can we edit it?
+	 */
+	protected function check_edit_permission( $post ) {
+		$post_type = get_post_type_object( $post['post_type'] );
+
+		if ( ! current_user_can( $post_type->cap->edit_post, $post['ID'] ) ) {
+			return false;
+		}
+
+		return true;
 	}
 
 	/**
@@ -218,7 +279,7 @@ class WP_JSON_Posts {
 			return $result;
 		}
 
-		$response = $this->get_post( $result );
+		$response = json_ensure_response( $this->get_post( $result ) );
 		$response->set_status( 201 );
 		$response->header( 'Location', json_url( '/posts/' . $result ) );
 		return $response;
@@ -243,7 +304,6 @@ class WP_JSON_Posts {
 		if ( empty( $post['ID'] ) )
 			return new WP_Error( 'json_post_invalid_id', __( 'Invalid post ID.' ), array( 'status' => 404 ) );
 
-		$post_type = get_post_type_object( $post['post_type'] );
 		if ( ! $this->check_read_permission( $post ) )
 			return new WP_Error( 'json_user_cannot_read', __( 'Sorry, you cannot read this post.' ), array( 'status' => 401 ) );
 
@@ -314,7 +374,7 @@ class WP_JSON_Posts {
 			return $retval;
 		}
 
-		return $this->getPost( $id );
+		return $this->get_post( $id );
 	}
 
 	/**
@@ -354,6 +414,43 @@ class WP_JSON_Posts {
 	}
 
 	/**
+	 * Delete a comment.
+	 *
+	 * @uses wp_delete_comment
+	 * @param int $id Post ID
+	 * @param int $comment Comment ID
+	 * @param boolean $force Skip trash
+	 * @return array
+	 */
+	public function delete_comment( $id, $comment, $force = false ) {
+		$comment = (int) $comment;
+
+		if ( empty( $comment ) )
+			return new WP_Error( 'json_comment_invalid_id', __( 'Invalid comment ID.' ), array( 'status' => 404 ) );
+
+		$comment_array = get_comment( $comment, ARRAY_A );
+
+		if ( empty( $comment_array ) )
+			return new WP_Error( 'json_comment_invalid_id', __( 'Invalid comment ID.' ), array( 'status' => 404 ) );
+
+		if ( ! current_user_can(  'edit_comment', $comment_array['comment_ID'] ) )
+			return new WP_Error( 'json_user_cannot_delete_comment', __( 'Sorry, you are not allowed to delete this comment.' ), array( 'status' => 401 ) );
+
+		$result = wp_delete_comment( $comment_array['comment_ID'], $force );
+
+		if ( ! $result )
+			return new WP_Error( 'json_cannot_delete', __( 'The comment cannot be deleted.' ), array( 'status' => 500 ) );
+
+		if ( $force ) {
+			return array( 'message' => __( 'Permanently deleted comment' ) );
+		}
+		else {
+			// TODO: return a HTTP 202 here instead
+			return array( 'message' => __( 'Deleted comment' ) );
+		}
+	}
+
+	/**
 	 * Retrieve comments
 	 *
 	 * @param int $id Post ID to retrieve comments for
@@ -362,6 +459,16 @@ class WP_JSON_Posts {
 	public function get_comments( $id ) {
 		//$args = array('status' => $status, 'post_id' => $id, 'offset' => $offset, 'number' => $number )l
 		$comments = get_comments( array('post_id' => $id) );
+
+		$post = get_post( $id, ARRAY_A );
+
+		if ( empty( $post['ID'] ) ) {
+			return new WP_Error( 'json_post_invalid_id', __( 'Invalid post ID.' ), array( 'status' => 404 ) );
+		}
+
+		if ( ! $this->check_read_permission( $post ) ) {
+			return new WP_Error( 'json_user_cannot_read', __( 'Sorry, you cannot read this post.' ), array( 'status' => 401 ) );
+		}
 
 		$struct = array();
 		foreach ( $comments as $comment ) {
@@ -378,6 +485,10 @@ class WP_JSON_Posts {
 	 */
 	public function get_comment( $comment ) {
 		$comment = get_comment( $comment );
+		if ( empty( $comment ) ) {
+			return new WP_Error( 'json_comment_invalid_id', __( 'Invalid comment ID.' ), array( 'status' => 404 ) );
+		}
+
 		$data = $this->prepare_comment( $comment );
 		return $data;
 	}
@@ -414,8 +525,9 @@ class WP_JSON_Posts {
 		if ( ! is_object( $type ) )
 			$type = get_post_type_object($type);
 
-		if ( $type->public === false )
+		if ( $type->show_in_json === false ) {
 			return new WP_Error( 'json_cannot_read_type', __( 'Cannot view post type' ), array( 'status' => 403 ) );
+		}
 
 		$data = array(
 			'name' => $type->label,
@@ -487,7 +599,7 @@ class WP_JSON_Posts {
 	 * @access protected
 	 *
 	 * @param array $post The unprepared post data
-	 * @param array $fields The subset of post type fields to return
+	 * @param string $context The context for the prepared post. (view|view-revision|edit|embed)
 	 * @return array The prepared post data
 	 */
 	protected function prepare_post( $post, $context = 'view' ) {
@@ -524,6 +636,7 @@ class WP_JSON_Posts {
 			'title_raw'   => $post['post_title'],
 			'content_raw' => $post['post_content'],
 			'guid_raw'    => $post['guid'],
+			'post_meta'   => $this->get_all_meta( $post['ID'] ),
 		);
 
 		// Dates
@@ -555,14 +668,12 @@ class WP_JSON_Posts {
 		if ( empty( $post_fields['format'] ) )
 			$post_fields['format'] = 'standard';
 
-		$post_fields['author'] = $this->prepare_author( $post['post_author'] );
-
-		if ( 'view' === $context && 0 !== $post['post_parent'] ) {
+		if ( ( 'view' === $context || 'view-revision' == $context ) && 0 !== $post['post_parent'] ) {
 			// Avoid nesting too deeply
 			// This gives post + post-extended + meta for the main post,
 			// post + meta for the parent and just meta for the grandparent
 			$parent = get_post( $post['post_parent'], ARRAY_A );
-			$post_fields['parent'] = $this->prepare_post( $parent, 'parent' );
+			$post_fields['parent'] = $this->prepare_post( $parent, 'embed' );
 		}
 
 		// Merge requested $post_fields fields into $_post
@@ -571,24 +682,37 @@ class WP_JSON_Posts {
 		// Include extended fields. We might come back to this.
 		$_post = array_merge( $_post, $post_fields_extended );
 
-		if ( 'edit' === $context && current_user_can( $post_type->cap->edit_post, $post['ID'] ) )
-			$_post = array_merge( $_post, $post_fields_raw );
-		elseif ( 'edit' === $context )
-			return new WP_Error( 'json_cannot_edit', __( 'Sorry, you cannot edit this post' ), array( 'status' => 403 ) );
+		if ( 'edit' === $context ) {
+			if ( current_user_can( $post_type->cap->edit_post, $post['ID'] ) ) {
+				if ( is_wp_error( $post_fields_raw['post_meta'] ) ) {
+					return $post_fields_raw['post_meta'];
+				}
 
-		// Post meta
-		$_post['post_meta'] = $this->prepare_meta( $post['ID'] );
+				$_post = array_merge( $_post, $post_fields_raw );
+			} else {
+				return new WP_Error( 'json_cannot_edit', __( 'Sorry, you cannot edit this post' ), array( 'status' => 403 ) );
+			}
+		} elseif ( 'view-revision' == $context ) {
+			if ( current_user_can( $post_type->cap->edit_post, $post['ID'] ) ) {
+				$_post = array_merge( $_post, $post_fields_raw );
+			} else {
+				return new WP_Error( 'json_cannot_view', __( 'Sorry, you cannot view this revision' ), array( 'status' => 403 ) );
+			}
+		}
 
 		// Entity meta
-		$_post['meta'] = array(
-			'links' => array(
-				'self'            => json_url( '/posts/' . $post['ID'] ),
-				'author'          => json_url( '/users/' . $post['post_author'] ),
-				'collection'      => json_url( '/posts' ),
-				'replies'         => json_url( '/posts/' . $post['ID'] . '/comments' ),
-				'version-history' => json_url( '/posts/' . $post['ID'] . '/revisions' ),
-			),
+		$links = array(
+			'self'            => json_url( '/posts/' . $post['ID'] ),
+			'author'          => json_url( '/users/' . $post['post_author'] ),
+			'collection'      => json_url( '/posts' ),
 		);
+
+		if ( 'view-revision' != $context ) {
+			$links['replies'] = json_url( '/posts/' . $post['ID'] . '/comments' );
+			$links['version-history'] = json_url( '/posts/' . $post['ID'] . '/revisions' );
+		}
+
+		$_post['meta'] = array( 'links' => $links );
 
 		if ( ! empty( $post['post_parent'] ) )
 			$_post['meta']['links']['up'] = json_url( '/posts/' . (int) $post['post_parent'] );
@@ -616,56 +740,357 @@ class WP_JSON_Posts {
 	/**
 	 * Retrieve custom fields for post.
 	 *
-	 * @since 2.5.0
-	 *
-	 * @param int $post_id Post ID.
-	 * @return array Custom fields, if exist.
+	 * @param int $id Post ID
+	 * @return (array[]|WP_Error) List of meta object data on success, WP_Error otherwise
 	 */
-	protected function prepare_meta( $post_id ) {
-		$post_id = (int) $post_id;
+	public function get_all_meta( $id ) {
+		$id = (int) $id;
 
-		$custom_fields = (array) get_post_meta( $post_id );
-
-		foreach ( $custom_fields as $meta_key => $meta_value ) {
-			// Don't expose protected fields.
-			if ( is_protected_meta( $meta_key ) )
-			    unset( $custom_fields[$meta_key] );
+		if ( empty( $id ) ) {
+			return new WP_Error( 'json_post_invalid_id', __( 'Invalid post ID.' ), array( 'status' => 404 ) );
 		}
 
-		return apply_filters( 'json_prepare_meta', $custom_fields );
-	}
-
-	protected function prepare_author( $author ) {
-		$user = get_user_by( 'id', $author );
-
-		if (! $author || ! is_object( $user ) ) {
-			return null;
+		$post = get_post( $id, ARRAY_A );
+		if ( empty( $post['ID'] ) ) {
+			return new WP_Error( 'json_post_invalid_id', __( 'Invalid post ID.' ), array( 'status' => 404 ) );
 		}
 
-
-		$author = array(
-			'ID' => $user->ID,
-			'name' => $user->display_name,
-			'slug' => $user->user_nicename,
-			'URL' => $user->user_url,
-			'avatar' => $this->server->get_avatar_url( $user->user_email ),
-			'meta' => array(
-				'links' => array(
-					'self' => json_url( '/users/' . $user->ID ),
-					'archives' => json_url( '/users/' . $user->ID . '/posts' ),
-				),
-			),
-		);
-
-		if ( current_user_can( 'edit_user', $user->ID ) ) {
-			$author['first_name'] = $user->first_name;
-			$author['last_name'] = $user->last_name;
+		if ( ! $this->check_edit_permission( $post ) ) {
+			return new WP_Error( 'json_cannot_edit', __( 'Sorry, you cannot edit this post' ), array( 'status' => 403 ) );
 		}
-		return $author;
+
+		global $wpdb;
+		$table = _get_meta_table( 'post' );
+		$results = $wpdb->get_results( $wpdb->prepare( "SELECT meta_id, meta_key, meta_value FROM $table WHERE post_id = %d", $id ) );
+
+		$meta = array();
+		foreach ( $results as $row ) {
+			$value = $this->prepare_meta( $id, $row, true );
+			if ( is_wp_error( $value ) ) {
+				continue;
+			}
+
+			$meta[] = $value;
+		}
+
+		return apply_filters( 'json_prepare_meta', $meta, $id );
 	}
 
 	/**
-	 * Helper method for wp_newPost and wp_editPost, containing shared logic.
+	 * Retrieve custom field object.
+	 *
+	 * @param int $id Post ID
+	 * @param int $mid Metadata ID
+	 * @return array|WP_Error Meta object data on success, WP_Error otherwise
+	 */
+	public function get_meta( $id, $mid ) {
+		$id = (int) $id;
+
+		if ( empty( $id ) ) {
+			return new WP_Error( 'json_post_invalid_id', __( 'Invalid post ID.' ), array( 'status' => 404 ) );
+		}
+
+		$post = get_post( $id, ARRAY_A );
+		if ( empty( $post['ID'] ) ) {
+			return new WP_Error( 'json_post_invalid_id', __( 'Invalid post ID.' ), array( 'status' => 404 ) );
+		}
+
+		if ( ! $this->check_edit_permission( $post ) ) {
+			return new WP_Error( 'json_cannot_edit', __( 'Sorry, you cannot edit this post' ), array( 'status' => 403 ) );
+		}
+
+		$meta = get_metadata_by_mid( 'post', $mid );
+		if ( empty( $meta ) ) {
+			return new WP_Error( 'json_meta_invalid_id', __( 'Invalid meta ID.' ), array( 'status' => 404 ) );
+		}
+
+		if ( absint( $meta->post_id ) !== $id ) {
+			return new WP_Error( 'json_meta_post_mismatch', __( 'Meta does not belong to this post' ), array( 'status' => 400 ) );
+		}
+
+		return $this->prepare_meta( $id, $meta );
+	}
+
+	/**
+	 * Prepares meta data for return as an object
+	 *
+	 * @param int $post Post ID
+	 * @param stdClass $data Metadata row from database
+	 * @param boolean $is_serialized Is the value field still serialized? (False indicates the value has been unserialized)
+	 * @return array|WP_Error Meta object data on success, WP_Error otherwise
+	 */
+	protected function prepare_meta( $post, $data, $is_raw = false ) {
+		$ID    = $data->meta_id;
+		$key   = $data->meta_key;
+		$value = $data->meta_value;
+
+		// Don't expose protected fields.
+		if ( is_protected_meta( $key ) ) {
+			return new WP_Error( 'json_meta_protected', sprintf( __( '%s is marked as a protected field.'), $key ), array( 'status' => 403 ) );
+		}
+
+		// Normalize serialized strings
+		if ( $is_raw && is_serialized_string( $value ) ) {
+			$value = unserialize( $value );
+		}
+
+		// Don't expose serialized data
+		if ( is_serialized( $value ) || ! is_string( $value ) ) {
+			return new WP_Error( 'json_meta_protected', sprintf( __( '%s contains serialized data.'), $key ), array( 'status' => 403 ) );
+		}
+
+		$meta = array(
+			'ID' => (int) $ID,
+			'key' => $key,
+			'value' => $value,
+		);
+
+		return apply_filters( 'json_prepare_meta_value', $meta, $post );
+	}
+
+	/**
+	 * Update/add/delete post meta for a post. Post meta is expected to be sent like so:
+	 * {
+	 * 	post_meta : [
+	 * 		{
+	 * 			"ID": 42,
+	 * 			"key" : "meta_key",
+	 * 			"value" : "meta_value"
+	 * 		}
+	 * 	]
+	 * }
+	 *
+	 * If ID is not specified, the meta value will be created; otherwise, the
+	 * value (and key, if it differs) will be updated. If ID is specified, and
+	 * the key is set to `null`, the data will be deleted.
+	 *
+	 * @param array $data
+	 * @param int $post_id
+	 * @return bool|WP_Error
+	 */
+	protected function handle_post_meta_action( $post_id, $data ) {
+		foreach ( $data as $meta_array ) {
+			if ( empty( $meta_array['ID'] ) ) {
+				// Creation
+				$result = $this->add_meta( $post_id, $meta_array );
+			}
+			else {
+				// Update
+				$result = $this->update_meta( $post_id, $meta_array['ID'], $meta_array );
+			}
+
+			if ( is_wp_error( $result ) ) {
+				return $result;
+			}
+		}
+
+		return true;
+	}
+
+	/**
+	 * Add meta to a post
+	 *
+	 * @param int $id Post ID
+	 * @param array $data {
+	 *     @type string|null $key Meta key
+	 *     @type string|null $key Meta value
+	 * }
+	 * @return bool|WP_Error
+	 */
+	public function update_meta( $id, $mid, $data ) {
+		$id = (int) $id;
+		$mid = (int) $mid;
+
+		if ( empty( $id ) ) {
+			return new WP_Error( 'json_post_invalid_id', __( 'Invalid post ID.' ), array( 'status' => 404 ) );
+		}
+
+		$post = get_post( $id, ARRAY_A );
+		if ( empty( $post['ID'] ) ) {
+			return new WP_Error( 'json_post_invalid_id', __( 'Invalid post ID.' ), array( 'status' => 404 ) );
+		}
+
+		if ( ! $this->check_edit_permission( $post ) ) {
+			return new WP_Error( 'json_cannot_edit', __( 'Sorry, you cannot edit this post' ), array( 'status' => 403 ) );
+		}
+
+		$current = get_metadata_by_mid( 'post', $mid );
+		if ( empty( $current ) ) {
+			return new WP_Error( 'json_meta_invalid_id', __( 'Invalid meta ID.' ), array( 'status' => 404 ) );
+		}
+
+		if ( absint( $current->post_id ) !== $id ) {
+			return new WP_Error( 'json_meta_post_mismatch', __( 'Meta does not belong to this post' ), array( 'status' => 400 ) );
+		}
+
+		if ( ! array_key_exists( 'key', $data ) ) {
+			$data['key'] = $current->meta_key;
+		}
+		if ( ! array_key_exists( 'value', $data ) ) {
+			$data['value'] = $current->meta_value;
+		}
+
+		if ( empty( $data['key'] ) ) {
+			return new WP_Error( 'json_meta_invalid_key', __( 'Invalid meta key.' ), array( 'status' => 400 ) );
+		}
+
+		// for now let's not allow updating of arrays, objects or serialized values.
+		if ( ! $this->is_valid_meta_data( $current->meta_value ) ) {
+			return new WP_Error( 'json_post_invalid_action', __( 'Invalid existing meta data for action.' ), array( 'status' => 400 ) );
+		}
+		if ( ! $this->is_valid_meta_data( $data['value'] ) ) {
+			return new WP_Error( 'json_post_invalid_action', __( 'Invalid provided meta data for action.' ), array( 'status' => 400 ) );
+		}
+		if ( is_protected_meta( $current->meta_key ) ) {
+			return new WP_Error( 'json_meta_protected', sprintf( __( '%s is marked as a protected field.'), $current->meta_key ), array( 'status' => 403 ) );
+		}
+		if ( is_protected_meta( $data['key'] ) ) {
+			return new WP_Error( 'json_meta_protected', sprintf( __( '%s is marked as a protected field.'), $data['key'] ), array( 'status' => 403 ) );
+		}
+
+		// update_metadata_by_mid will return false if these are equal, so check
+		// first and pass through
+		if ( $data['value'] === $current->meta_value && $data['key'] === $current->meta_key ) {
+			return $this->get_meta( $id, $mid );
+		}
+
+		$key = wp_slash( $data['key'] );
+		$value = wp_slash( $data['value'] );
+		if ( ! update_metadata_by_mid( 'post', $mid, $value, $key ) ) {
+			return new WP_Error( 'json_meta_could_not_update', __( 'Could not update post meta.' ), array( 'status' => 500 ) );
+		}
+
+		return $this->get_meta( $id, $mid );
+	}
+
+	/**
+	 * Check if the data provided is valid data
+	 *
+	 * Excludes serialized data from being sent via the API.
+	 *
+	 * @see https://github.com/WP-API/WP-API/pull/68
+	 * @param mixed $data Data to be checked
+	 * @return boolean Whether the data is valid or not
+	 */
+	protected function is_valid_meta_data( $data ) {
+		if ( is_array( $data ) || is_object( $data ) || is_serialized( $data ) ) {
+			return false;
+		}
+
+		return true;
+	}
+
+	/**
+	 * Add meta to a post
+	 *
+	 * @param int $id Post ID
+	 * @param array $data {
+	 *     @type string|null $key Meta key
+	 *     @type string|null $key Meta value
+	 * }
+	 * @return bool|WP_Error
+	 */
+	public function add_meta( $id, $data ) {
+		$id = (int) $id;
+
+		if ( empty( $id ) ) {
+			return new WP_Error( 'json_post_invalid_id', __( 'Invalid post ID.' ), array( 'status' => 404 ) );
+		}
+
+		$post = get_post( $id, ARRAY_A );
+		if ( empty( $post['ID'] ) ) {
+			return new WP_Error( 'json_post_invalid_id', __( 'Invalid post ID.' ), array( 'status' => 404 ) );
+		}
+
+		if ( ! $this->check_edit_permission( $post ) ) {
+			return new WP_Error( 'json_cannot_edit', __( 'Sorry, you cannot edit this post' ), array( 'status' => 403 ) );
+		}
+
+		if ( ! array_key_exists( 'key', $data ) ) {
+			return new WP_Error( 'json_post_missing_key', __( 'Missing meta key.' ), array( 'status' => 400 ) );
+		}
+		if ( ! array_key_exists( 'value', $data ) ) {
+			return new WP_Error( 'json_post_missing_value', __( 'Missing meta value.' ), array( 'status' => 400 ) );
+		}
+
+		if ( empty( $data['key'] ) ) {
+			return new WP_Error( 'json_meta_invalid_key', __( 'Invalid meta key.' ), array( 'status' => 400 ) );
+		}
+
+		if ( ! $this->is_valid_meta_data( $data['value'] ) ) {
+			// for now let's not allow updating of arrays, objects or serialized values.
+			return new WP_Error( 'json_post_invalid_action', __( 'Invalid provided meta data for action.' ), array( 'status' => 400 ) );
+		}
+		if ( is_protected_meta( $data['key'] ) ) {
+			return new WP_Error( 'json_meta_protected', sprintf( __( '%s is marked as a protected field.'), $data['key'] ), array( 'status' => 403 ) );
+		}
+
+		$meta_key = wp_slash( $data['key'] );
+		$value = wp_slash( $data['value'] );
+
+		$result = add_post_meta( $id, $meta_key, $value );
+		if ( ! $result ) {
+			return new WP_Error( 'json_meta_could_not_add', __( 'Could not add post meta.' ), array( 'status' => 400 ) );
+		}
+
+		$response = json_ensure_response( $this->get_meta( $id, $result ) );
+		if ( is_wp_error( $response ) ) {
+			return $response;
+		}
+		$response->set_status( 201 );
+		$response->header( 'Location', json_url( '/posts/' . $id . '/meta/' . $result ) );
+		return $response;
+	}
+
+	/**
+	 * Delete meta from a post
+	 *
+	 * @param int $id Post ID
+	 * @param int $mid Metadata ID
+	 * @return array|WP_Error Message on success, WP_Error otherwise
+	 */
+	public function delete_meta( $id, $mid ) {
+		$id = (int) $id;
+
+		if ( empty( $id ) ) {
+			return new WP_Error( 'json_post_invalid_id', __( 'Invalid post ID.' ), array( 'status' => 404 ) );
+		}
+
+		$post = get_post( $id, ARRAY_A );
+		if ( empty( $post['ID'] ) ) {
+			return new WP_Error( 'json_post_invalid_id', __( 'Invalid post ID.' ), array( 'status' => 404 ) );
+		}
+
+		if ( ! $this->check_edit_permission( $post ) ) {
+			return new WP_Error( 'json_cannot_edit', __( 'Sorry, you cannot edit this post' ), array( 'status' => 403 ) );
+		}
+
+		$current = get_metadata_by_mid( 'post', $mid );
+		if ( empty( $current ) ) {
+			return new WP_Error( 'json_meta_invalid_id', __( 'Invalid meta ID.' ), array( 'status' => 404 ) );
+		}
+
+		if ( absint( $current->post_id ) !== $id ) {
+			return new WP_Error( 'json_meta_post_mismatch', __( 'Meta does not belong to this post' ), array( 'status' => 400 ) );
+		}
+
+		// for now let's not allow updating of arrays, objects or serialized values.
+		if ( ! $this->is_valid_meta_data( $current->meta_value ) ) {
+			return new WP_Error( 'json_post_invalid_action', __( 'Invalid existing meta data for action.' ), array( 'status' => 400 ) );
+		}
+		if ( is_protected_meta( $current->meta_key ) ) {
+			return new WP_Error( 'json_meta_protected', sprintf( __( '%s is marked as a protected field.'), $current->meta_key ), array( 'status' => 403 ) );
+		}
+
+		if ( ! delete_metadata_by_mid( 'post', $mid ) ) {
+			return new WP_Error( 'json_meta_could_not_add', __( 'Could not delete post meta.' ), array( 'status' => 500 ) );
+		}
+
+		return array( 'message' => __( 'Deleted meta' ) );;
+	}
+
+	/**
+	 * Helper method for {@see new_post} and {@see edit_post}, containing shared logic.
 	 *
 	 * @since 3.4.0
 	 * @uses wp_insert_post()
@@ -747,7 +1172,7 @@ class WP_JSON_Posts {
 				default:
 					if ( ! get_post_status_object( $post['post_status'] ) )
 						$post['post_status'] = 'draft';
-				break;
+					break;
 			}
 		}
 
@@ -758,18 +1183,30 @@ class WP_JSON_Posts {
 
 		// Post date
 		if ( ! empty( $data['date'] ) ) {
-			list( $post['post_date'], $post['post_date_gmt'] ) = $this->server->get_date_with_gmt( $data['date'] );
+			$date_data = $this->server->get_date_with_gmt( $data['date'] );
+			if ( ! empty( $date_data ) ) {
+				list( $post['post_date'], $post['post_date_gmt'] ) = $date_data;
+			}
 		}
 		elseif ( ! empty( $data['date_gmt'] ) ) {
-			list( $post['post_date'], $post['post_date_gmt'] ) = $this->server->get_date_with_gmt( $data['date_gmt'], true );
+			$date_data = $this->server->get_date_with_gmt( $data['date_gmt'], true );
+			if ( ! empty( $date_data ) ) {
+				list( $post['post_date'], $post['post_date_gmt'] ) = $date_data;
+			}
 		}
 
 		// Post modified
 		if ( ! empty( $data['modified'] ) ) {
-			list( $post['post_modified'], $post['post_modified_gmt'] ) = $this->server->get_date_with_gmt( $data['modified'] );
+			$date_data = $this->server->get_date_with_gmt( $data['modified'] );
+			if ( ! empty( $date_data ) ) {
+				list( $post['post_modified'], $post['post_modified_gmt'] ) = $date_data;
+			}
 		}
 		elseif ( ! empty( $data['modified_gmt'] ) ) {
-			list( $post['post_modified'], $post['post_modified_gmt'] ) = $this->server->get_date_with_gmt( $data['modified_gmt'], true );
+			$date_data = $this->server->get_date_with_gmt( $data['modified_gmt'], true );
+			if ( ! empty( $date_data ) ) {
+				list( $post['post_modified'], $post['post_modified_gmt'] ) = $date_data;
+			}
 		}
 
 		// Post slug
@@ -863,6 +1300,19 @@ class WP_JSON_Posts {
 			return $post_ID;
 		}
 
+		// If this is a new post, add the post ID to $post
+		if ( ! $update ) {
+			$post['ID'] = $post_ID;
+		}
+
+		// Post meta
+		if ( ! empty( $data['post_meta'] ) ) {
+			$result = $this->handle_post_meta_action( $post_ID, $data['post_meta'] );
+			if ( is_wp_error( $result ) ) {
+				return $result;
+			}
+		}
+
 		// Sticky
 		if ( isset( $post['sticky'] ) )  {
 			if ( $post['sticky'] )
@@ -874,49 +1324,6 @@ class WP_JSON_Posts {
 		do_action( 'json_insert_post', $post, $data, $update );
 
 		return $post_ID;
-	}
-
-	/**
-	 * Parse an RFC3339 timestamp into a DateTime
-	 *
-	 * @param string $date RFC3339 timestamp
-	 * @param boolean $force_utc Force UTC timezone instead of using the timestamp's TZ?
-	 * @return DateTime
-	 */
-	protected function parse_date( $date, $force_utc = false ) {
-		// Default timezone to the server's current one
-		$timezone = self::get_timezone();
-		if ( $force_utc ) {
-			$date = preg_replace( '/[+-]\d+:?\d+$/', '+00:00', $date );
-			$timezone = new DateTimeZone( 'UTC' );
-		}
-
-		// Strip millisecond precision (a full stop followed by one or more digits)
-		if ( strpos( $date, '.' ) !== false ) {
-			$date = preg_replace( '/\.\d+/', '', $date );
-		}
-		$datetime = WP_JSON_DateTime::createFromFormat( DateTime::RFC3339, $date );
-
-		return $datetime;
-	}
-
-	/**
-	 * Get a local date with its GMT equivalent, in MySQL datetime format
-	 *
-	 * @param string $date RFC3339 timestamp
-	 * @param boolean $force_utc Should we force UTC timestamp?
-	 * @return array Local and UTC datetime strings, in MySQL datetime format (Y-m-d H:i:s)
-	 */
-	protected function get_date_with_gmt( $date, $force_utc = false ) {
-		$datetime = $this->server->parse_date( $date, $force_utc );
-
-		$datetime->setTimezone( self::get_timezone() );
-		$local = $datetime->format( 'Y-m-d H:i:s' );
-
-		$datetime->setTimezone( new DateTimeZone( 'UTC' ) );
-		$utc = $datetime->format('Y-m-d H:i:s');
-
-		return array( $local, $utc );
 	}
 
 	/**
@@ -983,7 +1390,7 @@ class WP_JSON_Posts {
 
 		// Author
 		if ( (int) $comment->user_id !== 0 ) {
-			$fields['author'] = $this->prepare_author( (int) $comment->user_id );
+			$fields['author'] = (int) $comment->user_id;
 		}
 		else {
 			$fields['author'] = array(
@@ -1023,21 +1430,6 @@ class WP_JSON_Posts {
 		if ( in_array( 'meta', $requested_fields ) )
 			$data['meta'] = $meta;
 
-		return $data;
-	}
-
-	/**
-	 * Magic method used to temporaly deprecate camelcase functions
-	 *
-	 * @param string $name      Function name
-	 * @param array  $arguments Function arguments
-	 * @return mixed
-	 */
-	public function __call($name, $arguments) {
-		$underscored = strtolower(preg_replace('/(?!^)[[:upper:]][[:lower:]]/', '_$0', $name));
-		if ( method_exists( $this, $underscored ) ) {
-			_deprecated_function( __CLASS__ . '->' . $name, 'WPAPI-0.9', __CLASS__ . '->' . $underscored );
-			return call_user_func_array( array( $this, $underscored ), $arguments );
-		}
+		return apply_filters( 'json_prepare_comment', $data, $comment, $context );
 	}
 }

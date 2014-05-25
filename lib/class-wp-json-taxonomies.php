@@ -17,12 +17,9 @@ class WP_JSON_Taxonomies {
 			),
 			'/posts/types/(?P<type>\w+)/taxonomies/(?P<taxonomy>\w+)/terms' => array(
 				array( array( $this, 'get_terms' ), WP_JSON_Server::READABLE ),
-				array( '__return_null', WP_JSON_Server::CREATABLE | WP_JSON_Server::ACCEPT_JSON ),
 			),
 			'/posts/types/(?P<type>\w+)/taxonomies/(?P<taxonomy>\w+)/terms/(?P<term>\w+)' => array(
 				array( array( $this, 'get_term' ), WP_JSON_Server::READABLE ),
-				array( '__return_null', WP_JSON_Server::EDITABLE | WP_JSON_Server::ACCEPT_JSON ),
-				array( '__return_null', WP_JSON_Server::DELETABLE ),
 			),
 		);
 		return array_merge( $routes, $tax_routes );
@@ -43,7 +40,7 @@ class WP_JSON_Taxonomies {
 			if ( is_wp_error( $tax ) )
 				continue;
 
-			$data[ $tax_type ] = $tax;
+			$data[] = $tax;
 		}
 
 		return $data;
@@ -133,7 +130,7 @@ class WP_JSON_Taxonomies {
 
 		$data = array();
 		foreach ($terms as $term) {
-			$data[ $term->slug ] = $this->prepare_term( $term, $type );
+			$data[] = $this->prepare_term( $term, $type );
 		}
 		return $data;
 	}
@@ -186,13 +183,14 @@ class WP_JSON_Taxonomies {
 	protected function prepare_term( $term, $type, $context = 'view' ) {
 		$base_url = '/posts/types/' . $type . '/taxonomies/' . $term->taxonomy . '/terms';
 		$data = array(
-			'ID'     => (int) $term->term_taxonomy_id,
-			'name'   => $term->name,
-			'slug'   => $term->slug,
-			'parent' => (int) $term->parent,
-			'count'  => (int) $term->count,
-			'link'   => get_term_link( $term, $term->taxonomy ),
-			'meta'   => array(
+			'ID'          => (int) $term->term_taxonomy_id,
+			'name'        => $term->name,
+			'slug'        => $term->slug,
+			'description' => $term->description,
+			'parent'      => (int) $term->parent,
+			'count'       => (int) $term->count,
+			'link'        => get_term_link( $term, $term->taxonomy ),
+			'meta'        => array(
 				'links' => array(
 					'collection' => json_url( $base_url ),
 					'self' => json_url( $base_url . '/' . $term->term_id ),
@@ -208,20 +206,5 @@ class WP_JSON_Taxonomies {
 		}
 
 		return apply_filters( 'json_prepare_term', $data, $term );
-	}
-
-	/**
-	 * Magic method used to temporaly deprecate camelcase functions
-	 *
-	 * @param string $name      Function name
-	 * @param array  $arguments Function arguments
-	 * @return mixed
-	 */
-	public function __call($name, $arguments) {
-		$underscored = strtolower(preg_replace('/(?!^)[[:upper:]][[:lower:]]/', '_$0', $name));
-		if ( method_exists( $this, $underscored ) ) {
-			_deprecated_function( __CLASS__ . '->' . $name, 'WPAPI-0.9', __CLASS__ . '->' . $underscored );
-			return call_user_func_array( array( $this, $underscored ), $arguments );
-		}
 	}
 }
