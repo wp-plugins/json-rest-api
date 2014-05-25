@@ -33,7 +33,8 @@ allowing plugin and theme developers to get up and running without needing to
 know anything about the details of getting connected.
 
 Check out [our documentation][docs] for information on what's available in the
-API and how to use it. We've also got documentation
+API and how to use it. We've also got documentation on extending the API with
+extra data for plugin and theme developers!
 
 We're currently aiming for integration into WordPress 4.0 as a permanent part of
 core.
