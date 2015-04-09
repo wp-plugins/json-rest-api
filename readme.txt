@@ -3,7 +3,7 @@ Contributors: rmccue
 Tags: json, rest, api, rest-api
 Requires at least: 3.9
 Tested up to: 3.9
-Stable tag: 1.1
+Stable tag: 1.1.2
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
 
@@ -51,6 +51,14 @@ look at the [recent updates][] for the project.
 Drop this directory in and activate it. That's all you need!
 
 == Changelog ==
+
+= 1.1.2 =
+
+* Fix information disclosure security vulnerability.
+
+  Unauthenticated users could access revisions of published and unpublished posts. Revisions are now only accessible to authenticated users with permission to edit the revision's post.
+
+  Reported by @chredd on 2015-04-09.
 
 = 1.1.1 =
 
