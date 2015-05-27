@@ -2,7 +2,7 @@
 Contributors: rmccue, rachelbaker
 Tags: json, rest, api, rest-api
 Requires at least: 3.9
-Tested up to: 4.1
+Tested up to: 4.3-alpha
 Stable tag: 1.2.2
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-2.0.html
